@@ -9,7 +9,7 @@ version = "0.1.0"
 cortex-m = "0.6.0"
 cortex-m-rt = "0.6.10"
 panic-halt = "0.2.0"
-lpc11uxx = "0.3.0"
+lpc11uxx = {version = "0.3.0", features = ["rt"]}
 
 # this lets you use `cargo fix`!
 [[bin]]
