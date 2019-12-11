@@ -1,0 +1,89 @@
+[config]
+skip_core_tasks = true
+
+[tasks.install-llvm-tools-preview]
+install_crate = { rustup_component_name = "llvm-tools-preview" }
+
+[tasks.install-cargo-binutils]
+dependencies = ["install-llvm-tools-preview"]
+install_crate = { crate_name = "cargo-binutils", binary = "cargo-objcopy", test_arg = "--help" }
+
+[tasks.custom-firmware-debug-build]
+workspace = false
+description = "Compiles custom-firmware for debug"
+command = "cargo"
+args = ["build", "--bin=custom-firmware"]
+
+[tasks.custom-firmware-release-build]
+workspace = false
+description = "Compiles custom-firmware for release"
+command = "cargo"
+args = ["build", "--bin=custom-firmware", "--release"]
+
+[tasks.custom-firmware-debug]
+dependencies = ["custom-firmware-debug-build", "install-cargo-binutils"]
+command = "cargo"
+args = ["objcopy", "--bin=custom-firmware", "--", "-O", "binary", "custom-firmware-debug.bin"]
+
+[tasks.custom-firmware-release]
+dependencies = ["custom-firmware-release-build", "install-cargo-binutils"]
+command = "cargo"
+args = ["objcopy", "--bin=custom-firmware", "--release", "--", "-O", "binary", "custom-firmware-release.bin"]
+
+[tasks.custom-firmware-release-patch]
+dependencies = ["custom-firmware-release", "install-cargo-binutils"]
+command = "lpc_checksum"
+args = ["-p", "LPC11U37_501", "custom-firmware-release.bin"]
+
+[tasks.custom-firmware-debug-patch]
+dependencies = ["custom-firmware-debug", "install-cargo-binutils"]
+command = "lpc_checksum"
+args = ["-p", "LPC11U37_501", "custom-firmware-debug.bin"]
+
+[tasks.custom-firmware-debug-install]
+dependencies = ["custom-firmware-debug-patch", "install-cargo-binutils"]
+command = "cp"
+args = ["custom-firmware-debug.bin", "/mnt/g/firmware.bin"]
+
+[tasks.custom-firmware-release-install]
+dependencies = ["custom-firmware-release-patch", "install-cargo-binutils"]
+command = "cp"
+args = ["custom-firmware-release.bin", "/mnt/g/firmware.bin"]
+
+
+[tasks.custom-firmware-debug-clean]
+script_runner = "@shell"
+script = [
+    '''
+        rm -f custom-firmware-debug.bin
+    '''
+]
+
+[tasks.custom-firmware-release-clean]
+script_runner = "@shell"
+script = [
+    '''
+        rm -f custom-firmware-release.bin
+    '''
+]
+
+[tasks.clean]
+workspace = false
+dependencies = ["custom-firmware-debug-clean", "custom-firmware-release-clean"]
+description = "Clean workspace"
+command = "cargo"
+args = ["clean"]
+
+[tasks.clippy]
+workspace = false
+command = "cargo"
+args = ["clippy"]
+
+[tasks.debug]
+dependencies = ["custom-firmware-debug-install"]
+
+[tasks.release]
+dependencies = ["custom-firmware-release-install"]
+
+[tasks.default]
+dependencies = ["debug"]
