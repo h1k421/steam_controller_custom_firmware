@@ -2,11 +2,16 @@
 #![no_main]
 
 use cortex_m::asm;
-use cortex_m_rt::entry;
+use cortex_m_rt::{entry, exception};
 
 mod led;
 mod rt;
 mod system;
+
+#[exception]
+fn DefaultHandler(_irq: i16) {
+    unimplemented!()
+}
 
 #[entry]
 fn main() -> ! {
