@@ -8,8 +8,9 @@ version = "0.1.0"
 [dependencies]
 cortex-m = "0.6.0"
 cortex-m-rt = "0.6.10"
-panic-halt = "0.2.0"
+embedded-hal = "0.2.3"
 lpc11uxx = {version = "0.3.0", features = ["rt"]}
+lpc11uxx-hal = { git = "https://github.com/lpc-rs/lpc11uxx-hal.git" }
 
 # this lets you use `cargo fix`!
 [[bin]]
