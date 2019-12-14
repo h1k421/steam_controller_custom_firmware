@@ -58,9 +58,10 @@ pub fn initialize() {
         .tcr
         .modify(|_, writer| writer.cen().the_timer_counter_an());
     unsafe {
-        // FIXME: Code gen for this is wrong somehow..
-        //peripherals.IOCON.pio0_21.write(|writer| writer.func().ct16b1_mat0().mode().inactive());
-        peripherals.IOCON.pio0_21.write(|writer| writer.bits(0x1));
+        peripherals
+            .IOCON
+            .pio0_21
+            .write(|writer| writer.func().ct16b1_mat0().mode().inactive());
     }
 }
 

@@ -96,7 +96,7 @@ pub fn initialize() {
 
     // Setup USB PPL (Division ration is 2 x 4, feedback divider value is 3 + 1)
     unsafe {
-        peripherals.SYSCON.syspllctrl.write(|writer| {
+        peripherals.SYSCON.usbpllctrl.write(|writer| {
             writer
                 .msel()
                 .bits(SYSTEM_PPL_MSET)
@@ -122,4 +122,69 @@ pub fn initialize() {
         .SYSCON
         .sysahbclkctrl
         .modify(|_, writer| writer.iocon().enabled());
+
+    // Stage 2 start here
+
+    // First we activate GPIO and then PINT[0] to PINT[7]
+    peripherals
+        .SYSCON
+        .sysahbclkctrl
+        .modify(|_, writer| writer.gpio().enabled());
+
+    peripherals
+        .SYSCON
+        .sysahbclkctrl
+        .modify(|_, writer| writer.pint().enabled());
+
+    // TODO: battery handling here (IMPORTANT BECAUSE WE NEED POWER)
+
+    // Now try to setup USB
+    unsafe {
+        // Enable pull down resistor on PIO0_3
+        peripherals
+            .IOCON
+            .pio0_3
+            .write(|writer| writer.mode().pull_down());
+
+        // Set PIO0_6 to NOT(USB_CONNECTED)
+        peripherals
+            .IOCON
+            .pio0_6
+            .write(|writer| writer.func().usb_connect().mode().inactive());
+    }
+
+    // Enable SRAM1
+    peripherals
+        .SYSCON
+        .sysahbclkctrl
+        .modify(|_, writer| writer.pint().enabled());
+
+    // Select USB clock source to USB PPL out
+    peripherals
+        .SYSCON
+        .usbclksel
+        .write(|write| write.sel().usb_pll_out());
+    peripherals
+        .SYSCON
+        .usbclkuen
+        .write(|writer| writer.ena().no_change());
+    peripherals
+        .SYSCON
+        .usbclkuen
+        .write(|writer| writer.ena().update_clock_source());
+    peripherals
+        .SYSCON
+        .usbclkdiv
+        .write(|writer| unsafe { writer.div().bits(1) });
+
+    // Now we can enable USB and USB RAM
+    // Enable SRAM1
+    peripherals
+        .SYSCON
+        .sysahbclkctrl
+        .modify(|_, writer| writer.usb().enabled());
+    peripherals
+        .SYSCON
+        .sysahbclkctrl
+        .modify(|_, writer| writer.usbram().enabled());
 }

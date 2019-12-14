@@ -19,9 +19,7 @@ impl RomDriver {
     pub fn ptr() -> *const Self {
         let vtable_ptr = 0x1FFF_1FF8 as *const u32;
 
-        unsafe {
-            *vtable_ptr as *const _
-        }
+        unsafe { *vtable_ptr as *const _ }
     }
 
     pub fn get() -> &'static Self {

@@ -97,16 +97,20 @@ unsafe fn usb_init() {
                     Ok(count) => {
                         // count bytes were read to &buf[..count]
                     }
-                    //Err(UsbError::WouldBlock) => // No data received
-                    Err(err) => panic!(),
+                    //Err(UsbError::WouldBlock) => {}
+                    Err(err) => {
+                        //panic!()
+                    }
                 };
 
                 match serial.write(&[0x3a, 0x29]) {
                     Ok(count) => {
                         // count bytes were written
                     }
-                    //Err(UsbError::WouldBlock) => // No data could be written (buffers full)
-                    Err(err) => panic!(),
+                    //Err(UsbError::WouldBlock) => {}
+                    Err(err) => {
+                        //panic!()
+                    }
                 };
             }
         }

@@ -12,7 +12,7 @@ use usb_device::device::UsbDevice;
 use usb_device::endpoint::{EndpointAddress, EndpointType};
 use usb_device::{Result, UsbDirection, UsbError};
 
-use crate::rom::usbd::{CoreDescriptors, EventType, InitParameter};
+use crate::rom::usbd::{CoreDescriptors, DeviceDescriptor, EventType, InitParameter};
 
 use cortex_m as cpu;
 
@@ -22,12 +22,10 @@ use cpu::Peripherals as ArmPeripherals;
 use lpc11uxx::Interrupt;
 use lpc11uxx::Peripherals;
 
-#[derive(Default, Clone)]
 pub struct Endpoint {
-    ep_type: Option<EndpointType>,
-    ep_dir: Option<UsbDirection>,
-    index: u8,
-    event_type: Option<EventType>,
+    address: EndpointAddress,
+    endpoint_type: EndpointType,
+    event_type: Cell<Option<EventType>>,
     is_stalled: Cell<bool>,
 }
 
@@ -36,33 +34,22 @@ unsafe impl Sync for Endpoint {}
 
 pub static mut USB_BUS_ALLOCATOR: Option<UsbBusAllocator<UsbBus>> = None;
 pub static mut USB_DEVICE: Option<UsbDevice<'static, UsbBus>> = None;
+
+// FIXME: REMOVE ME
 pub static mut USB_HANDLE: Option<usbd::Handle> = None;
 
 impl Endpoint {
-    pub fn new(index: u8) -> Self {
+    pub fn new(address: EndpointAddress, endpoint_type: EndpointType) -> Self {
         Endpoint {
-            ep_type: None,
-            ep_dir: None,
-            index,
-            event_type: None,
+            address,
+            endpoint_type,
+            event_type: Cell::new(None),
             is_stalled: Cell::new(false),
         }
     }
 
-    pub fn ep_type(&self) -> Option<EndpointType> {
-        self.ep_type
-    }
-
-    pub fn set_ep_type(&mut self, ep_type: EndpointType) {
-        self.ep_type = Some(ep_type);
-    }
-
-    pub fn set_ep_dir(&mut self, ep_dir: UsbDirection) {
-        self.ep_dir = Some(ep_dir);
-    }
-
     pub fn get_address(&self) -> EndpointAddress {
-        EndpointAddress::from_parts(self.index as usize, self.ep_dir.unwrap())
+        self.address
     }
 
     pub fn get_poll_data(&self) -> PollResult {
@@ -70,14 +57,22 @@ impl Endpoint {
         let mut ep_in_complete: u16 = 0;
         let mut ep_setup: u16 = 0;
 
-        match self.event_type {
-            Some(EventType::In) => ep_in_complete = 1 << self.index,
-            Some(EventType::Out) => ep_out = 1 << self.index,
-            Some(EventType::Setup) => ep_setup = 1 << self.index,
-            _ => return PollResult::None
+        match self.event_type.get() {
+            Some(EventType::In) => ep_in_complete = 1 << self.address.index(),
+            Some(EventType::Out) => ep_out = 1 << self.address.index(),
+            Some(EventType::Setup) => ep_setup = 1 << self.address.index(),
+            Some(EventType::Reset) => {
+                self.event_type.set(None);
+                return PollResult::Reset;
+            }
+            _ => return PollResult::None,
         };
 
-        PollResult::Data { ep_out, ep_in_complete, ep_setup }
+        PollResult::Data {
+            ep_out,
+            ep_in_complete,
+            ep_setup,
+        }
     }
 
     pub fn read(
@@ -86,18 +81,26 @@ impl Endpoint {
         usb_handle: usbd::Handle,
         buf: &mut [u8],
     ) -> Result<usize> {
-        let value = if let Some(EventType::Setup) = self.event_type {
-            unimplemented!()
-        } else {
-            (usb_api.hw().read_req_ep)(
+        let res = match self.event_type.get() {
+            // TODO: THIS IS TOTALLY UNSAFE
+            Some(EventType::Setup) => Ok((usb_api.hw().read_setup_pkt)(
+                usb_handle,
+                u8::from(self.get_address()) as u32,
+                buf as *mut _ as *mut u32,
+            )),
+            Some(EventType::Out) => Ok((usb_api.hw().read_req_ep)(
                 usb_handle,
                 u8::from(self.get_address()) as u32,
                 buf as *mut _ as *mut u8,
                 buf.len() as u32,
-            )
+            )),
+            Some(_) => unimplemented!(),
+            None => Err(UsbError::WouldBlock),
         };
 
-        Ok(value as usize)
+        self.event_type.set(None);
+
+        res.map(|value| value as usize)
     }
 
     pub fn write(
@@ -112,6 +115,8 @@ impl Endpoint {
             buf as *const _ as *const u8,
             buf.len() as u32,
         );
+
+        self.event_type.set(None);
 
         Ok(value as usize)
     }
@@ -144,20 +149,17 @@ impl Endpoint {
 
         match event_type {
             EventType::In | EventType::Out | EventType::Setup => {
-                endpoint.event_type = Some(event_type);
-                unimplemented!()
+                endpoint.event_type.set(Some(event_type));
             }
-            EventType::Reset => {
-            }
-            _ => {
-                unimplemented!();
-            }
+            _ => {}
         }
-        0
+
+        // We don't handle anything, this permits for the ClassHandler of both control interface to be called if needed.
+        0x00040002
     }
 
     pub fn register_handler(&mut self, usb_api: &usbd::UsbRomDriver, usb_handle: usbd::Handle) {
-        let result = if self.index == 0 {
+        let result = if self.address.index() == 0 {
             (usb_api.core().register_class_handler)(
                 usb_handle,
                 Self::handle_event,
@@ -166,7 +168,7 @@ impl Endpoint {
         } else {
             (usb_api.core().register_ep_handler)(
                 usb_handle,
-                u32::from(self.index),
+                self.address.index() as u32,
                 Self::handle_event,
                 self as *mut _ as *mut u8,
             )
@@ -187,15 +189,9 @@ pub struct UsbBus {
 
 impl UsbBus {
     pub fn new() -> UsbBusAllocator<Self> {
-        let mut endpoints = ArrayVec::new();
-
-        for i in 0..usbd::MAX_EP_COUNT {
-            endpoints.push(Endpoint::new(i as u8));
-        }
-
         let bus = UsbBus {
             usb_api: RomDriver::get().usb_api(),
-            endpoints,
+            endpoints: ArrayVec::new(),
             max_endpoint: 0,
             usb_handle: None,
         };
@@ -207,11 +203,15 @@ impl UsbBus {
         self.usb_handle.ok_or(UsbError::InvalidState)
     }
 
-    /*pub fn handle_interrupt(&self) {
-        if let Some(usb_handle) = self.usb_handle {
-            (self.usb_api.hw().isr)(usb_handle);
+    fn get_endpoint(&self, address: EndpointAddress) -> Result<&Endpoint> {
+        for endpoint in &self.endpoints {
+            if endpoint.get_address() == address {
+                return Ok(endpoint);
+            }
         }
-    }*/
+
+        Err(UsbError::InvalidEndpoint)
+    }
 }
 
 impl usb_device::bus::UsbBus for UsbBus {
@@ -223,41 +223,20 @@ impl usb_device::bus::UsbBus for UsbBus {
         max_packet_size: u16,
         interval: u8,
     ) -> Result<EndpointAddress> {
-        for index in ep_addr
-            .map(|a| a.index()..a.index() + 1)
-            .unwrap_or(1..usbd::MAX_EP_COUNT)
-        {
-            let ep = &mut self.endpoints[index];
-
-            match ep.ep_type() {
-                None => {
-                    ep.set_ep_type(ep_type);
-                    ep.set_ep_dir(ep_dir);
-                }
-                Some(t) if t != ep_type => {
-                    continue;
-                }
-                _ => {}
-            };
-
-            return Ok(ep.get_address());
+        if self.endpoints.is_full() {
+            return Err(UsbError::EndpointOverflow);
         }
 
-        Err(match ep_addr {
-            Some(_) => UsbError::InvalidEndpoint,
-            None => UsbError::EndpointOverflow,
-        })
+        let ep_addr = ep_addr.unwrap_or(EndpointAddress::from_parts(self.endpoints.len(), ep_dir));
+        let mut endpoint = Endpoint::new(ep_addr, ep_type);
+
+        self.endpoints.push(endpoint);
+
+        Ok(ep_addr)
     }
 
     fn enable(&mut self) {
-        let mut max = 0;
-        for (index, ep) in self.endpoints.iter().enumerate() {
-            if ep.ep_type().is_some() {
-                max = index;
-            }
-        }
-
-        self.max_endpoint = max;
+        self.max_endpoint = self.endpoints.len() - 1;
 
         let mut configuration: InitParameter = InitParameter::default();
 
@@ -282,6 +261,8 @@ impl usb_device::bus::UsbBus for UsbBus {
             &configuration,
         );
 
+        self.usb_handle = Some(usb_handle);
+
         unsafe {
             USB_HANDLE = Some(usb_handle);
         }
@@ -290,8 +271,8 @@ impl usb_device::bus::UsbBus for UsbBus {
             panic!("Error while init");
         }
 
-        for i in 0..=max {
-            self.endpoints[i].register_handler(self.usb_api, usb_handle);
+        for endpoint in &mut self.endpoints {
+            endpoint.register_handler(self.usb_api, usb_handle);
         }
 
         unsafe {
@@ -314,13 +295,18 @@ impl usb_device::bus::UsbBus for UsbBus {
         let mut ep_in_complete: u16 = 0;
         let mut ep_setup: u16 = 0;
 
-        for i in 0..=self.max_endpoint {
-            match self.endpoints[i].get_poll_data() {
-                PollResult::Data { ep_out: out, ep_in_complete: in_complete, ep_setup: setup } => {
+        for endpoint in &self.endpoints {
+            match endpoint.get_poll_data() {
+                PollResult::Data {
+                    ep_out: out,
+                    ep_in_complete: in_complete,
+                    ep_setup: setup,
+                } => {
                     ep_out += out;
                     ep_in_complete += in_complete;
                     ep_setup += setup;
                 }
+                PollResult::Reset => return PollResult::Reset,
                 _ => {}
             }
         }
@@ -329,7 +315,11 @@ impl usb_device::bus::UsbBus for UsbBus {
             return PollResult::None;
         }
 
-        PollResult::Data { ep_out, ep_in_complete, ep_setup }        
+        PollResult::Data {
+            ep_out,
+            ep_in_complete,
+            ep_setup,
+        }
     }
 
     fn set_device_address(&self, addr: u8) {
@@ -343,11 +333,10 @@ impl usb_device::bus::UsbBus for UsbBus {
             return Err(UsbError::InvalidEndpoint);
         }
 
-        if ep_addr.index() > self.max_endpoint {
-            return Err(UsbError::InvalidEndpoint);
+        match self.get_endpoint(ep_addr) {
+            Ok(endpoint) => endpoint.write(self.usb_api, self.get_usb_handle()?, buf),
+            Err(error) => Err(error),
         }
-
-        self.endpoints[ep_addr.index()].write(self.usb_api, self.get_usb_handle()?, buf)
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
@@ -355,28 +344,30 @@ impl usb_device::bus::UsbBus for UsbBus {
             return Err(UsbError::InvalidEndpoint);
         }
 
-        if ep_addr.index() > self.max_endpoint {
-            return Err(UsbError::InvalidEndpoint);
+        match self.get_endpoint(ep_addr) {
+            Ok(endpoint) => {
+                if self.get_usb_handle().is_err() {
+                    unimplemented!()
+                }
+                endpoint.read(self.usb_api, self.get_usb_handle()?, buf)
+            }
+            Err(error) => Err(error),
         }
-
-        self.endpoints[ep_addr.index()].read(self.usb_api, self.get_usb_handle()?, buf)
     }
 
     fn is_stalled(&self, ep_addr: EndpointAddress) -> bool {
-        if ep_addr.index() > self.endpoints.len() {
-            return false;
+        match self.get_endpoint(ep_addr) {
+            Ok(endpoint) => endpoint.is_stalled(),
+            Err(_) => false,
         }
-
-        self.endpoints[ep_addr.index()].is_stalled()
     }
 
     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
-        if ep_addr.index() > self.endpoints.len() {
-            return;
-        }
-
-        if let Ok(ubs_handle) = self.get_usb_handle() {
-            self.endpoints[ep_addr.index()].set_stalled(self.usb_api, ubs_handle, stalled);
+        if let Ok(usb_handle) = self.get_usb_handle() {
+            match self.get_endpoint(ep_addr) {
+                Ok(endpoint) => endpoint.set_stalled(self.usb_api, usb_handle, stalled),
+                Err(_) => {}
+            }
         }
     }
 
