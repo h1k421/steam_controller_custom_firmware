@@ -1,20 +1,12 @@
-use lpc11uxx::Peripherals;
+use lpc11uxx::{CorePeripherals, Peripherals};
 
 pub static CRYSTAL_OSCILLATOR_CLOCK_RATE: u32 = 12_000_000;
 pub static SYSTEM_PPL_MSET: u8 = 3;
 pub static SYSTEM_PPL_PSET: u8 = 1;
 
-fn setup_system_ppl(peripherals: &mut Peripherals, msel: u8, psel: u8) {
-    unsafe {
-        peripherals
-            .SYSCON
-            .syspllctrl
-            .write(|writer| writer.msel().bits(msel).psel().bits(psel));
-    }
-}
-
 pub fn initialize() {
-    let mut peripherals = unsafe { Peripherals::steal() };
+    let peripherals = unsafe { Peripherals::steal() };
+    let core_peripherals = unsafe { CorePeripherals::steal() };
 
     // Power up Crystal oscillator
     peripherals
@@ -43,7 +35,15 @@ pub fn initialize() {
         .modify(|_, writer| writer.syspll_pd().powered_down());
 
     // Setup System PPL (Division ration is 2 x 4, feedback divider value is 3 + 1)
-    setup_system_ppl(&mut peripherals, SYSTEM_PPL_MSET, SYSTEM_PPL_PSET);
+    unsafe {
+        peripherals.SYSCON.syspllctrl.write(|writer| {
+            writer
+                .msel()
+                .bits(SYSTEM_PPL_MSET)
+                .psel()
+                .bits(SYSTEM_PPL_PSET)
+        });
+    }
 
     // Power up System PLL clock again
     peripherals
@@ -60,6 +60,12 @@ pub fn initialize() {
         .sysahbclkdiv
         .write(|writer| unsafe { writer.div().bits(1) });
 
+    // Setup FLASH to 50Mhz
+    peripherals
+        .FLASHCTRL
+        .flashcfg
+        .modify(|_, writer| writer.flashtim()._3_system_clocks_flas());
+
     // Select main clock source to System PLL output
     peripherals
         .SYSCON
@@ -73,6 +79,43 @@ pub fn initialize() {
         .SYSCON
         .mainclkuen
         .write(|writer| writer.ena().update_clock_source());
+
+    // Select Crystal Oscillator as System PLL clock source
+    peripherals
+        .SYSCON
+        .usbpllclksel
+        .write(|writer| writer.sel().system_oscillator());
+    peripherals
+        .SYSCON
+        .usbpllclkuen
+        .write(|writer| writer.ena().no_change());
+    peripherals
+        .SYSCON
+        .usbpllclkuen
+        .write(|writer| writer.ena().update_clock_source());
+
+    // Setup USB PPL (Division ration is 2 x 4, feedback divider value is 3 + 1)
+    unsafe {
+        peripherals.SYSCON.syspllctrl.write(|writer| {
+            writer
+                .msel()
+                .bits(SYSTEM_PPL_MSET)
+                .psel()
+                .bits(SYSTEM_PPL_PSET)
+        });
+    }
+
+    // Power up USB PLL clock and USB transceiver.
+    peripherals.SYSCON.pdruncfg.modify(|_, writer| {
+        writer
+            .usbpll_pd()
+            .powered()
+            .usbpad_pd()
+            .usb_transceiver_poweered()
+    });
+
+    // Wait until USB PLL clock is ready
+    while peripherals.SYSCON.usbpllstat.read().lock().is_pll_locked() {}
 
     // Enable IOCON clock
     peripherals

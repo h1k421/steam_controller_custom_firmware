@@ -6,11 +6,19 @@ name = "custom-firmware"
 version = "0.1.0"
 
 [dependencies]
+arrayvec = { version = "0.5.1", default-features = false }
+bitflags = "1.2"
+bitfield = "0.13"
 cortex-m = "0.6.0"
 cortex-m-rt = "0.6.10"
 embedded-hal = "0.2.3"
+enum_primitive = { git = "https://github.com/roblabla/enum_primitive-rs.git", branch = "master"}
 lpc11uxx = {version = "0.3.0", features = ["rt"]}
 lpc11uxx-hal = { git = "https://github.com/lpc-rs/lpc11uxx-hal.git" }
+static_assertions = "1.1.0"
+usb-device = "0.2.3"
+usbd-serial = "0.1.0"
+
 
 # this lets you use `cargo fix`!
 [[bin]]

@@ -43,12 +43,12 @@ args = ["-p", "LPC11U37_501", "custom-firmware-debug.bin"]
 [tasks.custom-firmware-debug-install]
 dependencies = ["custom-firmware-debug-patch", "install-cargo-binutils"]
 command = "cp"
-args = ["custom-firmware-debug.bin", "/mnt/g/firmware.bin"]
+args = ["custom-firmware-debug.bin", "/mnt/i/firmware.bin"]
 
 [tasks.custom-firmware-release-install]
 dependencies = ["custom-firmware-release-patch", "install-cargo-binutils"]
 command = "cp"
-args = ["custom-firmware-release.bin", "/mnt/g/firmware.bin"]
+args = ["custom-firmware-release.bin", "/mnt/i/firmware.bin"]
 
 
 [tasks.custom-firmware-debug-clean]
