@@ -109,12 +109,15 @@ impl Endpoint {
         usb_handle: usbd::Handle,
         buf: &[u8],
     ) -> Result<usize> {
+
         let value = (usb_api.hw().write_ep)(
             usb_handle,
             u8::from(self.get_address()) as u32,
             buf as *const _ as *const u8,
             buf.len() as u32,
         );
+
+        assert!(value == buf.len() as u32);
 
         self.event_type.set(None);
 
@@ -150,12 +153,13 @@ impl Endpoint {
         match event_type {
             EventType::In | EventType::Out | EventType::Setup => {
                 endpoint.event_type.set(Some(event_type));
+                0
             }
-            _ => {}
+            _ => {
+                // We don't handle anything, this permits for the ClassHandler of both control interface to be called if needed.
+                0x00040002
+            }
         }
-
-        // We don't handle anything, this permits for the ClassHandler of both control interface to be called if needed.
-        0x00040002
     }
 
     pub fn register_handler(&mut self, usb_api: &usbd::UsbRomDriver, usb_handle: usbd::Handle) {
@@ -204,8 +208,11 @@ impl UsbBus {
     }
 
     fn get_endpoint(&self, address: EndpointAddress) -> Result<&Endpoint> {
+
         for endpoint in &self.endpoints {
-            if endpoint.get_address() == address {
+            let ep_addr = endpoint.get_address();
+
+            if address.index() == ep_addr.index() && address.direction() == ep_addr.direction() {
                 return Ok(endpoint);
             }
         }
