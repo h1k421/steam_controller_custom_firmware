@@ -19,6 +19,8 @@ mod usbd;
 use rom::usbd::{CoreDescriptors, DeviceDescriptor, InitParameter};
 use rom::RomDriver;
 
+use lpc11uxx::interrupt;
+
 use usb_device::prelude::*;
 
 use usbd_serial::*;
@@ -112,6 +114,9 @@ unsafe fn usb_init() {
                         //panic!()
                     }
                 };
+
+                // Wait for interruption (as polling is handled in the IRQ)
+                asm::wfi();
             }
         }
     }
@@ -131,4 +136,12 @@ fn main() -> ! {
     loop {
         asm::wfi();
     }
+}
+
+#[interrupt]
+fn USB_IRQ() {
+    /*if let Some(usb_device) = &usbd::USB_DEVICE {
+        usb_device.handle_irq();
+    }*/
+    unimplemented!()
 }
