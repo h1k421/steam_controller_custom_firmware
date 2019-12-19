@@ -137,11 +137,3 @@ fn main() -> ! {
         asm::wfi();
     }
 }
-
-#[interrupt]
-fn USB_IRQ() {
-    /*if let Some(usb_device) = &usbd::USB_DEVICE {
-        usb_device.handle_irq();
-    }*/
-    unimplemented!()
-}

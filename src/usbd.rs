@@ -1,13 +1,15 @@
 use arrayvec::ArrayVec;
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use usb_device::bus::{PollResult, UsbBusAllocator};
 use usb_device::device::UsbDevice;
 use usb_device::endpoint::{EndpointAddress, EndpointType};
 use usb_device::{Result, UsbDirection, UsbError};
 
+use cortex_m::asm;
 use cortex_m::peripheral::NVIC;
+use lpc11uxx::interrupt;
 use lpc11uxx::{CorePeripherals, Interrupt, Peripherals};
 
 use bitfield::bitfield;
@@ -21,13 +23,14 @@ pub const HS_MAX_BULK_PACKET: usize = 0x200;
 
 pub struct Endpoint {
     address: EndpointAddress,
-    endpoint_type: EndpointType,
+    endpoint_type: Option<EndpointType>,
     endpoint_entry: Cell<*mut HardwareEndpoint>,
     registers: lpc11uxx::USB,
     // TODO: remove options and use MaybeUninit?
     buffer_address: Cell<*mut u8>,
     buffer_size: Cell<usize>,
     is_active: Cell<bool>,
+    is_used: Cell<bool>,
 }
 
 // SAFETY: We only have one core so no issues here :)
@@ -37,24 +40,29 @@ pub static mut USB_BUS_ALLOCATOR: Option<UsbBusAllocator<UsbBus>> = None;
 pub static mut USB_DEVICE: Option<UsbDevice<'static, UsbBus>> = None;
 
 impl Endpoint {
-    pub fn new(
-        address: EndpointAddress,
-        endpoint_type: EndpointType,
-        registers: lpc11uxx::USB,
-    ) -> Self {
+    pub fn new(address: EndpointAddress, registers: lpc11uxx::USB) -> Self {
         Endpoint {
             address,
-            endpoint_type,
+            endpoint_type: None,
             endpoint_entry: Cell::new(core::ptr::null_mut()),
             registers,
             buffer_address: Cell::new(core::ptr::null_mut()),
             buffer_size: Cell::new(0),
             is_active: Cell::new(false),
+            is_used: Cell::new(false),
         }
     }
 
     pub fn get_address(&self) -> EndpointAddress {
         self.address
+    }
+
+    pub fn set_endpoint_type(&mut self, endpoint_type: EndpointType) {
+        self.endpoint_type = Some(endpoint_type);
+    }
+
+    pub fn endpoint_type(&self) -> Option<EndpointType> {
+        self.endpoint_type
     }
 
     pub unsafe fn initialize(&self, usb_memory_base: *mut u8) {
@@ -90,6 +98,7 @@ impl Endpoint {
         self.set_buffer(target_buffer_address, MAX_PACKET0);
 
         self.is_active.set(false);
+        self.is_used.set(false);
     }
 
     pub fn get_buffer(&mut self) -> &mut [u8] {
@@ -191,17 +200,134 @@ impl Endpoint {
     }
 
     pub fn write(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!()
+        let endpoint_entry = self.endpoint_entry.get();
+        let buffer_index = UsbBus::get_buffer_offset_with_address(self.address);
+
+        let double_buffer_mask = 1 << buffer_index;
+
+        let mut target_endpoint_entry = endpoint_entry;
+        let mut target_buffer_address = self.buffer_address.get();
+
+        if self.address.index() == 0 {
+            // EP0 OUT must be set active it seems?
+            unsafe {
+                (*endpoint_entry.offset(-2)).set_active(true);
+            }
+        } else if (self.registers.epinuse.read().bits() & double_buffer_mask) != 0
+            && (self.registers.epbufcfg.read().bits() & double_buffer_mask) != 0
+        {
+            // Secondary buffer in use.
+            target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
+            target_buffer_address =
+                unsafe { target_buffer_address.offset(self.buffer_size.get() as isize) }
+        }
+
+        let count = core::cmp::min(self.buffer_size.get(), buf.len());
+
+        unsafe {
+            (*target_endpoint_entry).set_size(count as u32);
+            (*target_endpoint_entry).set_address(target_buffer_address as u32);
+
+            buf.as_ptr().copy_to(target_buffer_address, count);
+
+            if self.address.index() != 0 && (*target_endpoint_entry).is_stalled() {
+                // As we are in a STALL state, save the flag to active the buffer later when the STALL is cleared.
+                self.is_active.set(true);
+
+                return Ok(count);
+            }
+
+            (*target_endpoint_entry).set_active(true);
+        }
+
+        Ok(count)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        unimplemented!()
+        // FIXME: WRONG ASF (We need to detect we are in a control endpoint AND a setup stage)
+        if self.endpoint_type == Some(EndpointType::Control) {
+            self.read_setup(buf)
+        } else {
+            self.read_normal(buf)
+        }
+    }
+
+    fn read_setup(&self, buf: &mut [u8]) -> Result<usize> {
+        let endpoint_entry = self.endpoint_entry.get();
+
+        unsafe {
+            // Disable stall if set
+            if (*endpoint_entry).is_stalled() || (*endpoint_entry.offset(1)).is_stalled() {
+                (*endpoint_entry).set_stalled(false);
+                (*endpoint_entry.offset(1)).set_stalled(false);
+            }
+        }
+
+        let count = core::cmp::min(8, buf.len());
+
+        unsafe {
+            let setup_buffer_address = self
+                .buffer_address
+                .get()
+                .offset(self.buffer_size.get() as isize);
+            // Copy the setup packet from the second buffer
+            buf.as_mut_ptr().copy_from(setup_buffer_address, count);
+
+            (*endpoint_entry.offset(1)).set_address(setup_buffer_address as u32);
+
+            // TODO: This should be set to 8.
+            (*endpoint_entry.offset(1)).set_size(self.buffer_size.get() as u32);
+        }
+
+        Ok(count)
+    }
+
+    fn read_normal(&self, buf: &mut [u8]) -> Result<usize> {
+        let endpoint_entry = self.endpoint_entry.get();
+        let buffer_index = UsbBus::get_buffer_offset_with_address(self.address);
+
+        let double_buffer_mask = 1 << buffer_index;
+
+        let mut target_endpoint_entry = endpoint_entry;
+        let mut target_buffer_address = self.buffer_address.get();
+
+        if self.address.index() != 0 && self.is_used.get() {
+            target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
+            target_buffer_address =
+                unsafe { target_buffer_address.offset(self.buffer_size.get() as isize) };
+        }
+
+        let count = core::cmp::min(buf.len(), unsafe {
+            self.buffer_size.get() - (*target_endpoint_entry).size() as usize
+        });
+
+        unsafe {
+            // Copy the setup packet from the second buffer
+            buf.as_mut_ptr().copy_from(target_buffer_address, count);
+        }
+
+        if self.address.index() != 0
+            && (self.registers.epbufcfg.read().bits() & double_buffer_mask) != 0
+        {
+            self.is_used
+                .set((self.registers.epinuse.read().bits() & double_buffer_mask) != 0);
+
+            if self.is_used.get() {
+                target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
+            } else {
+                target_endpoint_entry = endpoint_entry;
+            }
+        }
+
+        unsafe {
+            (*target_endpoint_entry).set_address(target_buffer_address as u32);
+            (*target_endpoint_entry).set_size(self.buffer_size.get() as u32);
+            (*target_endpoint_entry).set_active(true);
+        }
+
+        Ok(count)
     }
 }
-
-// Control structure that MUST be on the USB RAM.
-#[repr(C)]
-pub struct UsbContext {}
 
 bitfield! {
   pub struct HardwareEndpoint(u32);
@@ -221,19 +347,33 @@ pub struct UsbBus {
     endpoints: ArrayVec<[Endpoint; MAX_EP_PHYSICAL_COUNT]>,
     registers: lpc11uxx::USB,
     usb_memory_base: *mut u8,
-    max_endpoint: usize,
+    interrupt_status: RefCell<Option<lpc11uxx::usb::intstat::R>>,
 }
 
 unsafe impl Sync for UsbBus {}
 
 impl UsbBus {
     pub fn new() -> UsbBusAllocator<Self> {
-        let bus = UsbBus {
+        let mut bus = UsbBus {
             endpoints: ArrayVec::new(),
             registers: unsafe { Peripherals::steal().USB },
             usb_memory_base: 0x20004000 as *mut u8,
-            max_endpoint: 0,
+            interrupt_status: RefCell::new(None)
         };
+
+        for i in 0..MAX_EP_LOGICAL_COUNT {
+            let out_endpoint =
+                Endpoint::new(EndpointAddress::from_parts(i, UsbDirection::Out), unsafe {
+                    Peripherals::steal().USB
+                });
+            bus.endpoints.push(out_endpoint);
+
+            let in_endpoint =
+                Endpoint::new(EndpointAddress::from_parts(i, UsbDirection::In), unsafe {
+                    Peripherals::steal().USB
+                });
+            bus.endpoints.push(in_endpoint);
+        }
 
         UsbBusAllocator::new(bus)
     }
@@ -251,14 +391,12 @@ impl UsbBus {
     }
 
     fn get_buffer_offset_with_address(endpoint_address: EndpointAddress) -> isize {
-        let value = (endpoint_address.index()
+        (endpoint_address.index() * 2
             + if endpoint_address.direction() == UsbDirection::In {
                 1
             } else {
                 0
-            }) as isize;
-
-        value * 2
+            }) as isize
     }
 
     unsafe fn init_endpoints(&self) {
@@ -285,6 +423,15 @@ impl UsbBus {
             .devcmdstat
             .modify(|_, writer| writer.dcon().clear_bit())
     }
+
+    pub fn handle_irq(&self) {
+        // First we get USB interruption status and immediately clear the register.
+        let interrupt_status = self.registers.intstat.read();
+        self.registers
+            .intstat
+            .write(|writer| unsafe { writer.bits(interrupt_status.bits()) });
+        self.interrupt_status.replace(Some(interrupt_status));
+    }
 }
 
 impl usb_device::bus::UsbBus for UsbBus {
@@ -296,21 +443,42 @@ impl usb_device::bus::UsbBus for UsbBus {
         max_packet_size: u16,
         interval: u8,
     ) -> Result<EndpointAddress> {
-        if self.endpoints.is_full() {
-            return Err(UsbError::EndpointOverflow);
+        for index in ep_addr
+            .map(|a| {
+                let index = Self::get_buffer_offset_with_address(a) as usize;
+                index..index + 1
+            })
+            .unwrap_or(2..self.endpoints.len())
+        {
+            let ep = &mut self.endpoints[index];
+
+            match ep.endpoint_type() {
+                None => {}
+                _ => continue,
+            };
+
+            match ep_dir {
+                UsbDirection::Out if ep.get_address().direction() == UsbDirection::Out => {
+                    ep.set_endpoint_type(ep_type);
+
+                    return Ok(EndpointAddress::from_parts(index, ep_dir));
+                }
+                UsbDirection::In if ep.get_address().direction() == UsbDirection::In => {
+                    ep.set_endpoint_type(ep_type);
+
+                    return Ok(EndpointAddress::from_parts(index, ep_dir));
+                }
+                _ => {}
+            }
         }
 
-        let ep_addr = ep_addr.unwrap_or(EndpointAddress::from_parts(self.endpoints.len(), ep_dir));
-        let endpoint = Endpoint::new(ep_addr, ep_type, unsafe { Peripherals::steal().USB });
-
-        self.endpoints.push(endpoint);
-
-        Ok(ep_addr)
+        Err(match ep_addr {
+            Some(_) => UsbError::InvalidEndpoint,
+            None => UsbError::EndpointOverflow,
+        })
     }
 
     fn enable(&mut self) {
-        self.max_endpoint = self.endpoints.len() - 1;
-
         // TODO: move the usb clock init here?
 
         // Enable USB IRQ
@@ -325,6 +493,13 @@ impl usb_device::bus::UsbBus for UsbBus {
     }
 
     fn reset(&self) {
+        // Clear reset bit if it's set
+        if self.registers.devcmdstat.read().dres_c().bit() {
+            self.registers
+                .devcmdstat
+                .modify(|_, writer| writer.dres_c().set_bit());
+        }
+
         unsafe {
             self.init_endpoints();
         }
@@ -383,7 +558,86 @@ impl usb_device::bus::UsbBus for UsbBus {
     }
 
     fn poll(&self) -> PollResult {
-        unimplemented!()
+        let interrupt_status_opt = self.interrupt_status.borrow_mut().take();
+
+        if interrupt_status_opt.is_none() {
+            return PollResult::None;
+        }
+
+        let interrupt_status = interrupt_status_opt.unwrap();
+
+        // FIXME: maybe we should clear not enable lines? it's not clear if we can't trust the hardware..
+        //interrupt_status &= self.registers.inten.read();
+
+        // Device Status interruption?
+        if interrupt_status.dev_int().bit() {
+            if self.registers.devcmdstat.read().dres_c().bit() {
+                return PollResult::Reset;
+            }
+
+            // Clear connect bit if it's set
+            if self.registers.devcmdstat.read().dcon_c().bit() {
+                self.registers
+                    .devcmdstat
+                    .modify(|_, writer| writer.dcon_c().set_bit());
+            }
+
+            // Find suspension change bit and clear it if it's set
+            if self.registers.devcmdstat.read().dsus_c().bit() {
+                self.registers
+                    .devcmdstat
+                    .modify(|_, writer| writer.dsus_c().set_bit());
+
+                // Report the right suspension event
+                if self.registers.devcmdstat.read().dsus().bit() {
+                    return PollResult::Suspend;
+                } else {
+                    return PollResult::Resume;
+                }
+            }
+        }
+
+        let mut ep_out: u16 = 0;
+        let mut ep_in_complete: u16 = 0;
+        let mut ep_setup: u16 = 0;
+
+        // If there is any changes on any hardware EP.
+        if (interrupt_status.bits() & 0x3FF) != 0 {
+            for endpoint_index in 0..MAX_EP_PHYSICAL_COUNT {
+                if (interrupt_status.bits() & 1 << endpoint_index) != 0 {
+                    if (endpoint_index % 1) == 0 {
+                        // If we are on OUT EP0, check for possible setup packet.
+                        if endpoint_index == 0 {
+                            // Find suspension change bit and clear it if it's set
+                            if self.registers.devcmdstat.read().setup().bit() {
+                                self.registers
+                                    .devcmdstat
+                                    .modify(|_, writer| writer.setup().set_bit());
+
+                                ep_setup += 1;
+                                continue;
+                            }
+                        }
+
+                        // This is an OUT EP.
+                        ep_out += 1;
+                    } else {
+                        // This is an IN EP.
+                        ep_in_complete += 1;
+                    }
+                }
+            }
+        }
+
+        if ep_in_complete == 0 && ep_out == 0 && ep_setup == 0 {
+            return PollResult::None;
+        }
+
+        PollResult::Data {
+            ep_out,
+            ep_in_complete,
+            ep_setup,
+        }
     }
 
     fn set_device_address(&self, addr: u8) {
@@ -435,10 +689,23 @@ impl usb_device::bus::UsbBus for UsbBus {
     }
 
     fn suspend(&self) {
-        unimplemented!()
+        // TODO: support suspension?
+        //unimplemented!()
     }
 
     fn resume(&self) {
-        unimplemented!()
+        // TODO: support suspension?
+        //unimplemented!()
+    }
+}
+
+#[interrupt]
+fn USB_IRQ() {
+    // This isn't used to handle USB interruptions because of how usb-device crate is designed. (around a polling user controlled)
+    // As such, the USB interrupt is used to reduce polling cost by making the user code wait for an interruption.
+    unsafe {
+        if let Some(usb_device) = &USB_DEVICE {
+            usb_device.bus().handle_irq();
+        }
     }
 }
