@@ -70,31 +70,28 @@ impl Endpoint {
         let endpoint_buffer = usb_memory_base.offset(0x100);
         let address = self.address;
 
-        let buffer_index = UsbBus::get_buffer_offset_with_address(address);
+        let endpoint_index = UsbBus::get_buffer_offset_with_address(address);
+        let buffer_index = endpoint_index * 2;
 
         let target_buffer_address = endpoint_buffer.offset(MAX_PACKET0 as isize * buffer_index);
 
-        (*endpoint_list.offset(buffer_index)).set_address(target_buffer_address as u32);
-        (*endpoint_list.offset(buffer_index)).set_size(MAX_PACKET0 as u32);
+        (*endpoint_list.offset(endpoint_index)).set_address(target_buffer_address as u32);
+        (*endpoint_list.offset(endpoint_index)).set_size(MAX_PACKET0 as u32);
 
         // EP0 is always active
-        if address.index() != 0 {
-            (*endpoint_list.offset(buffer_index)).set_disabled(true);
-        }
+        (*endpoint_list.offset(endpoint_index)).set_disabled(address.index() == 0);
 
         // Seems like even in single buffering mode you need this???
         // This is fine as EP0 OUT buffer 1 is special and used for setup...
         let target_double_buffer_address =
             endpoint_buffer.offset(MAX_PACKET0 as isize * buffer_index + MAX_PACKET0 as isize);
-        (*endpoint_list.offset(buffer_index + 1)).set_address(target_double_buffer_address as u32);
-        (*endpoint_list.offset(buffer_index + 1)).set_size(MAX_PACKET0 as u32);
+        (*endpoint_list.offset(endpoint_index + 1)).set_address(target_double_buffer_address as u32);
+        (*endpoint_list.offset(endpoint_index + 1)).set_size(MAX_PACKET0 as u32);
 
         // EP0 buffer 1 is always active and is special (OUT: setup, IN: reserved)
-        if address.index() != 0 {
-            (*endpoint_list.offset(buffer_index + 1)).set_disabled(true);
-        }
+        (*endpoint_list.offset(endpoint_index + 1)).set_disabled(address.index() == 0);
 
-        self.endpoint_entry.set(endpoint_list.offset(buffer_index));
+        self.endpoint_entry.set(endpoint_list.offset(endpoint_index));
         self.set_buffer(target_buffer_address, MAX_PACKET0);
 
         self.is_active.set(false);
@@ -405,7 +402,7 @@ impl UsbBus {
             .write(|writer| writer.bits(self.usb_memory_base as u32));
         self.registers
             .databufstart
-            .write(|writer| writer.bits((self.usb_memory_base.offset(0x100) as u32) & 0xFFC00000));
+            .write(|writer| writer.bits(self.usb_memory_base.offset(0x100) as u32));
 
         for endpoint in &self.endpoints {
             endpoint.initialize(self.usb_memory_base);
@@ -512,6 +509,12 @@ impl usb_device::bus::UsbBus for UsbBus {
         self.registers
             .epskip
             .write(|writer| unsafe { writer.skip().bits(0) });
+
+        // Enable double buffering
+        self.registers
+            .epbufcfg
+            .write(|writer| unsafe { writer.bits(0x3FF) });
+
 
         self.registers
             .devcmdstat
