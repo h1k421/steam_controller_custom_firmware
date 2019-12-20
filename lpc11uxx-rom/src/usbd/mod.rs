@@ -1,5 +1,6 @@
 use bitfield::bitfield;
 use enum_primitive::FromPrimitive;
+use static_assertions::assert_eq_size;
 
 pub const MAX_IF_COUNT: usize = 8;
 pub const MAX_EP_COUNT: usize = 5;

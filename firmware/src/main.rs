@@ -11,13 +11,12 @@ use cortex_m::asm;
 use cortex_m_rt::{entry, exception};
 
 mod led;
-mod rom;
 mod rt;
 mod system;
 mod usbd;
 
-use rom::usbd::{CoreDescriptors, DeviceDescriptor, InitParameter};
-use rom::RomDriver;
+use lpc11uxx_rom::usbd::{CoreDescriptors, DeviceDescriptor, InitParameter};
+use lpc11uxx_rom::RomDriver;
 
 use lpc11uxx::interrupt;
 

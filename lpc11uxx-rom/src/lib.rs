@@ -1,3 +1,7 @@
+#![no_std]
+
+use static_assertions::assert_eq_size;
+
 pub mod usbd;
 
 #[repr(C)]

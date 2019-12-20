@@ -15,6 +15,7 @@ embedded-hal = "0.2.3"
 enum_primitive = { git = "https://github.com/roblabla/enum_primitive-rs.git", branch = "master"}
 lpc11uxx = {version = "0.3.0", features = ["rt"]}
 lpc11uxx-hal = { git = "https://github.com/lpc-rs/lpc11uxx-hal.git" }
+lpc11uxx-rom = { path = "../lpc11uxx-rom" }
 static_assertions = "1.1.0"
 #usb-device = "0.2.3"
 usb-device = "0.2.3"

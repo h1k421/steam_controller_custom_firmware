@@ -104,6 +104,7 @@ dependencies = [
  "enum_primitive 0.1.1 (git+https://github.com/roblabla/enum_primitive-rs.git)",
  "lpc11uxx 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lpc11uxx-hal 0.1.0 (git+https://github.com/lpc-rs/lpc11uxx-hal.git)",
+ "lpc11uxx-rom 0.1.0",
  "static_assertions 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "usb-device 0.2.3",
  "usbd-serial 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -161,6 +162,15 @@ dependencies = [
  "cortex-m 0.5.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "embedded-hal 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "lpc11uxx 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "lpc11uxx-rom"
+version = "0.1.0"
+dependencies = [
+ "bitfield 0.13.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "enum_primitive 0.1.1 (git+https://github.com/roblabla/enum_primitive-rs.git)",
+ "static_assertions 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
