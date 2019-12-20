@@ -169,6 +169,7 @@ name = "lpc11uxx-rom"
 version = "0.1.0"
 dependencies = [
  "bitfield 0.13.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cortex-m 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "enum_primitive 0.1.1 (git+https://github.com/roblabla/enum_primitive-rs.git)",
  "static_assertions 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]

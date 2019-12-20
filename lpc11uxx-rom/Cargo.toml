@@ -10,3 +10,4 @@ edition = "2018"
 bitfield = "0.13"
 enum_primitive = { git = "https://github.com/roblabla/enum_primitive-rs.git", branch = "master"}
 static_assertions = "1.1.0"
+cortex-m = "0.6"
