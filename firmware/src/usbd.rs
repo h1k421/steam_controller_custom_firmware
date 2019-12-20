@@ -1,6 +1,7 @@
 use arrayvec::ArrayVec;
 
 use core::cell::{Cell, RefCell};
+use core::ops::DerefMut;
 
 use usb_device::bus::{PollResult, UsbBusAllocator};
 use usb_device::device::UsbDevice;
@@ -21,16 +22,196 @@ pub const MAX_PACKET0: usize = 0x40;
 pub const FS_MAX_BULK_PACKET: usize = 0x40;
 pub const HS_MAX_BULK_PACKET: usize = 0x200;
 
+pub struct EndpointBuffer {
+    endpoint_entry: *mut HardwareEndpoint,
+    buffer_address: *mut u8,
+    buffer_size: u32,
+    address: EndpointAddress,
+    endpoint_type: EndpointType,
+}
+
+impl EndpointBuffer {
+    pub fn new(address: EndpointAddress) -> Self {
+        EndpointBuffer {
+            endpoint_entry: core::ptr::null_mut(),
+            buffer_address: core::ptr::null_mut(),
+            buffer_size: 0,
+            address,
+            endpoint_type: EndpointType::Control,
+        }
+    }
+
+    pub fn get_hw_mut(&mut self) -> &mut HardwareEndpoint {
+        unsafe { &mut *self.endpoint_entry }
+    }
+
+    pub fn get_hw(&self) -> &HardwareEndpoint {
+        unsafe { &*self.endpoint_entry }
+    }
+
+    pub fn configure(
+        &mut self,
+        endpoint_type: EndpointType,
+        buffer_address: *mut u8,
+        buffer_size: u32,
+    ) {
+        self.endpoint_type = endpoint_type;
+        self.buffer_address = buffer_address;
+        self.buffer_size = buffer_size;
+
+        let hardware_endpoint = self.get_hw_mut();
+
+        hardware_endpoint.set_size(buffer_size);
+        hardware_endpoint.set_address(buffer_address as u32);
+        hardware_endpoint.set_cs(0);
+
+        if endpoint_type == EndpointType::Isochronous {
+            hardware_endpoint.set_iso_type(true);
+        }
+
+        self.disable();
+    }
+
+    pub fn setup_for_output(&mut self) {
+        let buffer_address = self.buffer_address as u32;
+
+        let hardware_endpoint = self.get_hw_mut();
+
+        hardware_endpoint.set_address(buffer_address);
+    }
+
+    pub fn setup_for_setup(&mut self) {
+        let buffer_address = self.buffer_address as u32;
+        let buffer_size = self.buffer_size;
+
+        let hardware_endpoint = self.get_hw_mut();
+
+        hardware_endpoint.set_address(buffer_address);
+    }
+
+    pub fn setup_for_input(&mut self, data_ptr: *const u8, count: u32) {
+        debug_assert!(count > self.buffer_size);
+
+        let address = self.address;
+
+        let buffer_address = self.buffer_address as u32;
+
+        unsafe {
+            data_ptr.copy_to(self.buffer_address, count as usize);
+        }
+
+        let hardware_endpoint = self.get_hw_mut();
+
+        hardware_endpoint.set_address(buffer_address);
+        hardware_endpoint.set_size(count);
+
+        // FIXME: NXP seems to clear bit 26 & 27???
+        //hardware_endpoint.set_iso_type(false);
+
+        if address.index() == 0 || !hardware_endpoint.is_stalled() {
+            hardware_endpoint.set_active(true);
+        }
+    }
+
+    pub fn reset_after_stall(&mut self, is_active: bool) {
+        let address = self.address;
+        let buffer_size = self.buffer_size;
+        let hardware_endpoint = self.get_hw_mut();
+        hardware_endpoint.set_reset(true);
+
+        if address.direction() == UsbDirection::In {
+            // if the IN EP was set active, reflect it in the hardware endpoint entry.
+            if is_active {
+                hardware_endpoint.set_active(true);
+            }
+        } else {
+            // For OUT EP, we reactivate and reset the size to the previous value.
+            hardware_endpoint.set_active(true);
+            hardware_endpoint.set_size(buffer_size);
+        }
+    }
+
+    pub fn enable(&mut self) {
+        if self.address.index() != 0 {
+            let address = self.address;
+            let hardware_endpoint = self.get_hw_mut();
+
+            hardware_endpoint.set_disabled(false);
+
+            // EP OUT mut be active when enabled
+            if address.direction() == UsbDirection::Out {
+                hardware_endpoint.set_active(true);
+            }
+        }
+    }
+
+    pub fn disable(&mut self) {
+        if self.address.index() != 0 {
+            self.get_hw_mut().set_disabled(true);
+        }
+    }
+
+    pub fn write(&mut self, buf: &[u8]) -> Result<(usize, bool)> {
+        if self.address.index() == 0 {
+            // EP0 OUT must be set active it seems?
+            unsafe {
+                (*self.endpoint_entry.offset(-2)).set_active(true);
+            }
+        }
+
+        let count = core::cmp::min(self.buffer_size as usize, buf.len());
+
+        self.setup_for_input(buf.as_ptr(), count as u32);
+
+        Ok((count, self.get_hw().is_stalled()))
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let buffer_size = self.buffer_size;
+
+        let hardware_endpoint = self.get_hw_mut();
+        let count = core::cmp::min(buf.len(), (buffer_size - hardware_endpoint.size()) as usize);
+
+        unsafe {
+            // Copy the data packet from the buffer
+            buf.as_mut_ptr().copy_from(self.buffer_address, count);
+        }
+
+        unsafe { self.read_unsafe(self.buffer_address, count) }
+    }
+
+    pub fn read_setup(&self, buf: &mut [u8]) -> Result<usize> {
+        // Disable stall if set for EP0 OUT/IN
+        unsafe {
+            if (*self.endpoint_entry).is_stalled() || (*self.endpoint_entry.offset(2)).is_stalled()
+            {
+                (*self.endpoint_entry).set_stalled(false);
+                (*self.endpoint_entry.offset(2)).set_stalled(false);
+            }
+        }
+
+        let count = core::cmp::min(buf.len(), 8);
+
+        unsafe { self.read_unsafe(self.buffer_address, count) }
+    }
+
+    unsafe fn read_unsafe(&self, buf: *mut u8, count: usize) -> Result<usize> {
+        buf.copy_from(self.buffer_address, count);
+
+        Ok(count)
+    }
+}
+
 pub struct Endpoint {
     address: EndpointAddress,
     endpoint_type: Option<EndpointType>,
-    endpoint_entry: Cell<*mut HardwareEndpoint>,
     registers: lpc11uxx::USB,
-    // TODO: remove options and use MaybeUninit?
-    buffer_address: Cell<*mut u8>,
-    buffer_size: Cell<usize>,
     is_active: Cell<bool>,
     is_used: Cell<bool>,
+    is_setup: Cell<bool>,
+    first_buffer: RefCell<EndpointBuffer>,
+    second_buffer: RefCell<EndpointBuffer>,
+    max_packet_size: u32,
 }
 
 // SAFETY: We only have one core so no issues here :)
@@ -44,12 +225,13 @@ impl Endpoint {
         Endpoint {
             address,
             endpoint_type: None,
-            endpoint_entry: Cell::new(core::ptr::null_mut()),
             registers,
-            buffer_address: Cell::new(core::ptr::null_mut()),
-            buffer_size: Cell::new(0),
+            first_buffer: RefCell::new(EndpointBuffer::new(address)),
+            second_buffer: RefCell::new(EndpointBuffer::new(address)),
             is_active: Cell::new(false),
             is_used: Cell::new(false),
+            is_setup: Cell::new(false),
+            max_packet_size: MAX_PACKET0 as u32,
         }
     }
 
@@ -65,50 +247,34 @@ impl Endpoint {
         self.endpoint_type
     }
 
-    pub unsafe fn initialize(&self, usb_memory_base: *mut u8) {
-        let endpoint_list = usb_memory_base as *mut HardwareEndpoint;
-        let endpoint_buffer = usb_memory_base.offset(0x100);
+    pub fn initialize(&self, usb_memory_base: *mut u8) {
+        let endpoint_buffer = unsafe { usb_memory_base.offset(0x100) };
         let address = self.address;
 
         let endpoint_index = UsbBus::get_buffer_offset_with_address(address);
         let buffer_index = endpoint_index * 2;
 
-        let target_buffer_address = endpoint_buffer.offset(MAX_PACKET0 as isize * buffer_index);
-
-        (*endpoint_list.offset(endpoint_index)).set_address(target_buffer_address as u32);
-        (*endpoint_list.offset(endpoint_index)).set_size(MAX_PACKET0 as u32);
-
-        // EP0 is always active
-        (*endpoint_list.offset(endpoint_index)).set_disabled(address.index() == 0);
-
-        // Seems like even in single buffering mode you need this???
-        // This is fine as EP0 OUT buffer 1 is special and used for setup...
+        let target_buffer_address =
+            unsafe { endpoint_buffer.offset(self.max_packet_size as isize * buffer_index) };
         let target_double_buffer_address =
-            endpoint_buffer.offset(MAX_PACKET0 as isize * buffer_index + MAX_PACKET0 as isize);
-        (*endpoint_list.offset(endpoint_index + 1)).set_address(target_double_buffer_address as u32);
-        (*endpoint_list.offset(endpoint_index + 1)).set_size(MAX_PACKET0 as u32);
+            unsafe { target_buffer_address.offset(self.max_packet_size as isize) };
 
-        // EP0 buffer 1 is always active and is special (OUT: setup, IN: reserved)
-        (*endpoint_list.offset(endpoint_index + 1)).set_disabled(address.index() == 0);
-
-        self.endpoint_entry.set(endpoint_list.offset(endpoint_index));
-        self.set_buffer(target_buffer_address, MAX_PACKET0);
+        self.first_buffer.borrow_mut().configure(
+            self.endpoint_type.unwrap_or(EndpointType::Bulk),
+            target_buffer_address,
+            self.max_packet_size,
+        );
+        self.second_buffer.borrow_mut().configure(
+            self.endpoint_type.unwrap_or(EndpointType::Bulk),
+            target_double_buffer_address,
+            self.max_packet_size,
+        );
 
         self.is_active.set(false);
         self.is_used.set(false);
     }
 
-    pub fn get_buffer(&mut self) -> &mut [u8] {
-        let buffer_address = self.buffer_address.get();
-        unsafe { core::slice::from_raw_parts_mut(buffer_address, self.buffer_size.get()) }
-    }
-
-    pub fn set_buffer(&self, buffer_address: *mut u8, buffer_size: usize) {
-        self.buffer_address.set(buffer_address);
-        self.buffer_size.set(buffer_size);
-    }
-
-    fn disable(&self) {
+    fn deactivate(&self) {
         let mask_to_apply = 1 << UsbBus::get_buffer_offset_with_address(self.address);
 
         self.registers
@@ -124,184 +290,135 @@ impl Endpoint {
     }
 
     pub fn is_stalled(&self) -> bool {
-        let endpoint_entry = self.endpoint_entry.get();
-
-        unsafe { (*endpoint_entry).is_stalled() }
+        self.first_buffer.borrow().get_hw().is_stalled()
     }
 
     pub fn set_stalled(&self, stalled: bool) {
-        let endpoint_entry = self.endpoint_entry.get();
         let double_buffer_mask = 1 << UsbBus::get_buffer_offset_with_address(self.address);
+
+        let mut first_buffer = self.first_buffer.borrow_mut();
+        let mut second_buffer = self.second_buffer.borrow_mut();
 
         if !stalled {
             if self.address.index() == 0 {
                 // If we are on EP0, we just need to clear the stall bit.
-                unsafe { (*endpoint_entry).set_stalled(false) };
+                first_buffer.get_hw_mut().set_stalled(false);
             } else {
                 // If we are on a non zero endpoint, we need to clear the stall bit on our double buffer and choose the appropriate one to reset.
+                first_buffer.get_hw_mut().set_stalled(false);
+                second_buffer.get_hw_mut().set_stalled(false);
 
-                unsafe {
-                    (*endpoint_entry).set_stalled(false);
-                    (*endpoint_entry.offset(1)).set_stalled(false);
-                }
-
-                let target_endpoint_entry;
+                let mut target_endpoint_entry;
 
                 if (self.registers.epinuse.read().bits() & double_buffer_mask) != 0 {
                     // Secondary buffer in use.
-                    target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
+                    target_endpoint_entry = second_buffer;
                 } else {
                     // Primary buffer in use.
-                    target_endpoint_entry = endpoint_entry;
+                    target_endpoint_entry = first_buffer;
                 }
 
-                unsafe { (*target_endpoint_entry).set_reset(true) };
+                target_endpoint_entry.reset_after_stall(self.is_active.get());
 
-                if self.address.direction() == UsbDirection::In {
-                    // if the IN EP was set active, reflect it in the hardware endpoint entry.
-                    if self.is_active.get() {
-                        unsafe { (*target_endpoint_entry).set_active(true) };
-
-                        self.is_active.set(false)
-                    }
-                } else {
-                    // For OUT EP, we reactivate and reset the size to the previous value.
-                    unsafe { (*target_endpoint_entry).set_active(true) };
-                    unsafe { (*target_endpoint_entry).set_size(self.buffer_size.get() as u32) };
-                }
+                self.is_active.set(false);
             }
         } else {
+            let mut hardware_endpoint = first_buffer;
             // If the active bit is set, we need to get ride of it before setting the stalled bit
-            let is_active = unsafe { (*endpoint_entry).is_active() };
+            let endpoint_entry = hardware_endpoint.get_hw_mut();
+
+            let is_active = endpoint_entry.is_active();
             if is_active {
-                self.disable();
+                self.deactivate();
             }
 
             // Set stall bit
-            unsafe { (*endpoint_entry).set_stalled(true) };
+            endpoint_entry.set_stalled(true);
 
             // If we aren't on EP0 and double buffering is active, we need to set the stall bit on the double buffer.
             if self.address.index() != 0
                 && (self.registers.epbufcfg.read().bits() & double_buffer_mask) != 0
             {
-                // If the active bit is set, we need to get ride of it before setting the stalled bit
-                let is_active = unsafe { (*endpoint_entry.offset(1)).is_active() };
+                let mut hardware_endpoint = second_buffer;
+                let endpoint_entry = hardware_endpoint.get_hw_mut();
+
+                let is_active = endpoint_entry.is_active();
                 if is_active {
-                    self.disable();
+                    self.deactivate();
                 }
 
                 // Set stall bit
-                unsafe { (*endpoint_entry.offset(0)).set_stalled(true) };
+                endpoint_entry.set_stalled(true);
             }
         }
     }
 
     pub fn write(&self, buf: &[u8]) -> Result<usize> {
-        let endpoint_entry = self.endpoint_entry.get();
         let buffer_index = UsbBus::get_buffer_offset_with_address(self.address);
-
         let double_buffer_mask = 1 << buffer_index;
 
-        let mut target_endpoint_entry = endpoint_entry;
-        let mut target_buffer_address = self.buffer_address.get();
+        let mut target_buffer;
 
-        if self.address.index() == 0 {
-            // EP0 OUT must be set active it seems?
-            unsafe {
-                (*endpoint_entry.offset(-2)).set_active(true);
-            }
-        } else if (self.registers.epinuse.read().bits() & double_buffer_mask) != 0
+        if (self.registers.epinuse.read().bits() & double_buffer_mask) != 0
             && (self.registers.epbufcfg.read().bits() & double_buffer_mask) != 0
         {
             // Secondary buffer in use.
-            target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
-            target_buffer_address =
-                unsafe { target_buffer_address.offset(self.buffer_size.get() as isize) }
+            target_buffer = self.second_buffer.borrow_mut();
+        } else {
+            // Primary Buffer in use.
+            target_buffer = self.first_buffer.borrow_mut();
         }
 
-        let count = core::cmp::min(self.buffer_size.get(), buf.len());
+        let (count, is_stalled) = target_buffer.write(buf)?;
 
-        unsafe {
-            (*target_endpoint_entry).set_size(count as u32);
-            (*target_endpoint_entry).set_address(target_buffer_address as u32);
-
-            buf.as_ptr().copy_to(target_buffer_address, count);
-
-            if self.address.index() != 0 && (*target_endpoint_entry).is_stalled() {
-                // As we are in a STALL state, save the flag to active the buffer later when the STALL is cleared.
-                self.is_active.set(true);
-
-                return Ok(count);
-            }
-
-            (*target_endpoint_entry).set_active(true);
+        if self.address.index() != 0 && is_stalled {
+            self.is_active.set(true);
         }
 
         Ok(count)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        // FIXME: WRONG ASF (We need to detect we are in a control endpoint AND a setup stage)
-        if self.endpoint_type == Some(EndpointType::Control) {
-            self.read_setup(buf)
+        if self.is_setup.get() {
+            let res = self.read_setup(buf);
+
+            self.is_setup.set(false);
+
+            res
         } else {
             self.read_normal(buf)
         }
     }
 
     fn read_setup(&self, buf: &mut [u8]) -> Result<usize> {
-        let endpoint_entry = self.endpoint_entry.get();
+        let mut buffer = self.second_buffer.borrow_mut();
+        let res = buffer.read_setup(buf);
 
-        unsafe {
-            // Disable stall if set
-            if (*endpoint_entry).is_stalled() || (*endpoint_entry.offset(1)).is_stalled() {
-                (*endpoint_entry).set_stalled(false);
-                (*endpoint_entry.offset(1)).set_stalled(false);
-            }
-        }
+        buffer.setup_for_setup();
 
-        let count = core::cmp::min(8, buf.len());
-
-        unsafe {
-            let setup_buffer_address = self
-                .buffer_address
-                .get()
-                .offset(self.buffer_size.get() as isize);
-            // Copy the setup packet from the second buffer
-            buf.as_mut_ptr().copy_from(setup_buffer_address, count);
-
-            (*endpoint_entry.offset(1)).set_address(setup_buffer_address as u32);
-
-            // TODO: This should be set to 8.
-            (*endpoint_entry.offset(1)).set_size(self.buffer_size.get() as u32);
-        }
-
-        Ok(count)
+        res
     }
 
     fn read_normal(&self, buf: &mut [u8]) -> Result<usize> {
-        let endpoint_entry = self.endpoint_entry.get();
-        let buffer_index = UsbBus::get_buffer_offset_with_address(self.address);
+        let mut first_buffer = self.first_buffer.borrow_mut();
+        let mut second_buffer = self.second_buffer.borrow_mut();
+        let first_buffer_ptr = first_buffer.deref_mut() as *mut EndpointBuffer;
+        let second_buffer_ptr = second_buffer.deref_mut() as *mut EndpointBuffer;
 
+        let buffer_index = UsbBus::get_buffer_offset_with_address(self.address);
         let double_buffer_mask = 1 << buffer_index;
 
-        let mut target_endpoint_entry = endpoint_entry;
-        let mut target_buffer_address = self.buffer_address.get();
+        let mut target_buffer_ptr;
 
         if self.address.index() != 0 && self.is_used.get() {
-            target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
-            target_buffer_address =
-                unsafe { target_buffer_address.offset(self.buffer_size.get() as isize) };
+            // Secondary buffer
+            target_buffer_ptr = second_buffer_ptr;
+        } else {
+            // Primary buffer
+            target_buffer_ptr = first_buffer_ptr;
         }
 
-        let count = core::cmp::min(buf.len(), unsafe {
-            self.buffer_size.get() - (*target_endpoint_entry).size() as usize
-        });
-
-        unsafe {
-            // Copy the setup packet from the second buffer
-            buf.as_mut_ptr().copy_from(target_buffer_address, count);
-        }
+        let res = unsafe { (*target_buffer_ptr).read(buf) };
 
         if self.address.index() != 0
             && (self.registers.epbufcfg.read().bits() & double_buffer_mask) != 0
@@ -310,19 +427,18 @@ impl Endpoint {
                 .set((self.registers.epinuse.read().bits() & double_buffer_mask) != 0);
 
             if self.is_used.get() {
-                target_endpoint_entry = unsafe { endpoint_entry.offset(1) };
+                target_buffer_ptr = second_buffer_ptr;
             } else {
-                target_endpoint_entry = endpoint_entry;
+                target_buffer_ptr = first_buffer_ptr;
             }
         }
 
+        // Reset to the original state and ready to receive buffers.
         unsafe {
-            (*target_endpoint_entry).set_address(target_buffer_address as u32);
-            (*target_endpoint_entry).set_size(self.buffer_size.get() as u32);
-            (*target_endpoint_entry).set_active(true);
+            (*target_buffer_ptr).setup_for_output();
         }
 
-        Ok(count)
+        res
     }
 }
 
@@ -330,14 +446,14 @@ bitfield! {
   pub struct HardwareEndpoint(u32);
   impl Debug;
   pub address, set_address: 15, 0;
-  pub size, set_size : 24, 16;
-  pub is_iso_type, set_iso_type: 25;
-  // bit 26: ???
-  pub is_reset, set_reset: 27;
-  pub is_stalled, set_stalled: 28;
-  pub is_disabled, set_disabled: 29;
-  pub is_active, set_active: 30;
-  //pub cs, set_cs: 30, 25;
+  pub size, set_size : 25, 16;
+  pub is_iso_type, set_iso_type: 26;
+  // bit 27: ???
+  pub is_reset, set_reset: 28;
+  pub is_stalled, set_stalled: 29;
+  pub is_disabled, set_disabled: 30;
+  pub is_active, set_active: 31;
+  pub cs, set_cs: 31, 26;
 }
 
 pub struct UsbBus {
@@ -355,7 +471,7 @@ impl UsbBus {
             endpoints: ArrayVec::new(),
             registers: unsafe { Peripherals::steal().USB },
             usb_memory_base: 0x20004000 as *mut u8,
-            interrupt_status: RefCell::new(None)
+            interrupt_status: RefCell::new(None),
         };
 
         for i in 0..MAX_EP_LOGICAL_COUNT {
@@ -403,6 +519,9 @@ impl UsbBus {
         self.registers
             .databufstart
             .write(|writer| writer.bits(self.usb_memory_base.offset(0x100) as u32));
+
+        // Clear eplist
+        core::ptr::write_bytes(self.usb_memory_base, 0, 0x100);
 
         for endpoint in &self.endpoints {
             endpoint.initialize(self.usb_memory_base);
@@ -485,7 +604,13 @@ impl usb_device::bus::UsbBus for UsbBus {
             NVIC::unmask(Interrupt::USB_IRQ);
         }
 
+        // reset devcmdstat
+        self.registers
+            .devcmdstat
+            .write(|writer| unsafe { writer.bits(0x0) });
         self.reset();
+
+        self.set_device_address(0);
         self.connect();
     }
 
@@ -514,7 +639,6 @@ impl usb_device::bus::UsbBus for UsbBus {
         self.registers
             .epbufcfg
             .write(|writer| unsafe { writer.bits(0x3FF) });
-
 
         self.registers
             .devcmdstat
@@ -575,6 +699,7 @@ impl usb_device::bus::UsbBus for UsbBus {
         // Device Status interruption?
         if interrupt_status.dev_int().bit() {
             if self.registers.devcmdstat.read().dres_c().bit() {
+                self.endpoints[0].is_setup.set(true);
                 return PollResult::Reset;
             }
 
