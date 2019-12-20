@@ -1,6 +1,7 @@
 use bitfield::bitfield;
 use enum_primitive::FromPrimitive;
 use static_assertions::assert_eq_size;
+use core::ptr::NonNull;
 
 pub const MAX_IF_COUNT: usize = 8;
 pub const MAX_EP_COUNT: usize = 5;
@@ -35,7 +36,7 @@ pub struct UsbRomDriver {
     pub core: *const CoreApi,
     pub msc: *const u32,
     pub dfu: *const u32,
-    pub hid: *const u32,
+    pub hid: *const HidApi,
     pub cdc: *const u32,
     reserved: u32,
     pub version: u32,
@@ -48,6 +49,10 @@ impl UsbRomDriver {
 
     pub fn core(&self) -> &CoreApi {
         unsafe { &*self.core }
+    }
+
+    pub fn hid(&self) -> &HidApi {
+        unsafe { &*self.hid }
     }
 }
 
@@ -267,13 +272,13 @@ pub struct CoreApi {
 assert_eq_size!(CoreApi, [u8; 0x20]);
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CoreDescriptors {
-    pub device_descriptors: *const DeviceDescriptor,
-    pub string_descriptors: *const u8,
-    pub full_speed_descriptors: *const u8,
-    pub high_speed_descriptors: *const u8,
-    pub device_qualifier: *const u8,
+    pub device_descriptors: Option<NonNull<DeviceDescriptor>>,
+    pub string_descriptors: Option<NonNull<u8>>,
+    pub full_speed_descriptors: Option<NonNull<u8>>,
+    pub high_speed_descriptors: Option<NonNull<u8>>,
+    pub device_qualifier: Option<NonNull<u8>>,
 }
 
 assert_eq_size!(CoreDescriptors, [u8; 0x14]);
@@ -282,7 +287,7 @@ assert_eq_size!(CoreDescriptors, [u8; 0x14]);
 #[derive(Debug)]
 pub struct HardwareApi {
     pub get_mem_size: extern "C" fn(*const InitParameter) -> u32,
-    pub init: extern "C" fn(*mut Handle, *const CoreDescriptors, *const InitParameter) -> i32,
+    pub init: extern "C" fn(*mut Handle, *const CoreDescriptors, *mut InitParameter) -> i32,
     pub connect: extern "C" fn(Handle, u32),
     pub isr: extern "C" fn(Handle),
     pub reset: extern "C" fn(Handle),
@@ -335,4 +340,41 @@ bitfield! {
   pub from into Recipient, recipient, set_recipient: 4, 0;
   pub from into RequestCategory, request_category, _ : 6, 5;
   pub from into RequestDirection, direction, _: 7;
+}
+
+#[repr(C)]
+pub struct HidApi {
+    pub get_mem_size: extern "C" fn(*const HidInitParameter) -> u32,
+    pub init: extern "C" fn(Handle, *const HidInitParameter) -> i32,
+}
+assert_eq_size!(HidApi, [u8; 8]);
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct HidInitParameter<'a> {
+    pub mem_base: u32,
+    pub mem_size: u32,
+    pub max_reports: u8,
+    pub pad: [u8; 3],
+    pub intf_desc: Option<NonNull<u8>>,
+    pub report_data: Option<&'a HidReport>,
+    pub get_report: Option<extern "C" fn(Handle, *const SetupPacket, *mut *mut u8, *mut u16)>,
+    pub set_report: Option<extern "C" fn(Handle, *const SetupPacket, *const *const u8, u16)>,
+    pub get_phys_desc: Option<extern "C" fn(Handle, *const SetupPacket, *mut *mut u8, *mut u16)>,
+    pub set_idle: Option<extern "C" fn(Handle, *const SetupPacket, u8)>,
+    pub set_protocol: Option<extern "C" fn(Handle, *const SetupPacket, u8)>,
+    pub ep_in_hdlr: Option<extern "C" fn(Handle, *const u8, u32)>,
+    pub ep_out_hdlr: Option<extern "C" fn(Handle, *const u8, u32)>,
+    pub get_report_desc: Option<extern "C" fn(Handle, *const SetupPacket, *mut *mut u8, *mut u16)>,
+    pub ep0_hdlr: Option<extern "C" fn(Handle, *const u8, u32)>,
+}
+assert_eq_size!(HidInitParameter, [u8; 0x38]);
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct HidReport {
+    len: u16,
+    idle_time: u8,
+    pad: u8,
+    desc: Option<NonNull<u8>>
 }
