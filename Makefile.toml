@@ -2,74 +2,89 @@
 skip_core_tasks = true
 default_to_workspace = false
 
+[env.development]
+PROFILE_NAME = "debug"
+COMPILER_FLAGS = ""
+
+[env.production]
+PROFILE_NAME = "release"
+COMPILER_FLAGS = "--release"
+
 [tasks.install-llvm-tools-preview]
 install_crate = { rustup_component_name = "llvm-tools-preview" }
+
+[tasks.install-lpc-checksum]
+install_crate = { crate_name = "lpc_checksum", binary = "lpc_checksum", test_arg = "--help" }
 
 [tasks.install-cargo-binutils]
 dependencies = ["install-llvm-tools-preview"]
 install_crate = { crate_name = "cargo-binutils", binary = "cargo-objcopy", test_arg = "--help" }
 
-[tasks.custom-firmware-debug-build]
-description = "Compiles custom-firmware for debug"
-command = "cargo"
-args = ["build", "--bin=custom-firmware"]
+# CUSTOM FIRMWARE RULES
 
-[tasks.custom-firmware-release-build]
-workspace = false
-description = "Compiles custom-firmware for release"
+[tasks.custom-firmware-build]
+description = "Compiles custom-firmware"
 command = "cargo"
-args = ["build", "--bin=custom-firmware", "--release"]
+args = ["build", "@@split(COMPILER_FLAGS, )", "--bin=custom-firmware"]
 
-[tasks.custom-firmware-debug]
-dependencies = ["custom-firmware-debug-build", "install-cargo-binutils"]
+[tasks.custom-firmware]
+dependencies = ["custom-firmware-build", "install-cargo-binutils"]
 command = "cargo"
-args = ["objcopy", "--bin=custom-firmware", "--", "-O", "binary", "custom-firmware-debug.bin"]
+args = ["objcopy", "@@split(COMPILER_FLAGS, )", "--bin=custom-firmware", "--", "-O", "binary", "custom-firmware-${PROFILE_NAME}.bin"]
 
-[tasks.custom-firmware-release]
-dependencies = ["custom-firmware-release-build", "install-cargo-binutils"]
-command = "cargo"
-args = ["objcopy", "--bin=custom-firmware", "--release", "--", "-O", "binary", "custom-firmware-release.bin"]
-
-[tasks.custom-firmware-release-patch]
-dependencies = ["custom-firmware-release", "install-cargo-binutils"]
+[tasks.custom-firmware-patch]
+dependencies = ["install-lpc-checksum", "custom-firmware", "install-cargo-binutils"]
 command = "lpc_checksum"
-args = ["-p", "LPC11U37_501", "custom-firmware-release.bin"]
+args = ["-p", "LPC11U37_501", "custom-firmware-${PROFILE_NAME}.bin"]
 
-[tasks.custom-firmware-debug-patch]
-dependencies = ["custom-firmware-debug", "install-cargo-binutils"]
-command = "lpc_checksum"
-args = ["-p", "LPC11U37_501", "custom-firmware-debug.bin"]
-
-[tasks.custom-firmware-debug-install]
-dependencies = ["custom-firmware-debug-patch", "install-cargo-binutils"]
+[tasks.custom-firmware-install]
+dependencies = ["custom-firmware-patch", "install-cargo-binutils"]
 command = "cp"
-args = ["custom-firmware-debug.bin", "/mnt/i/firmware.bin"]
+args = ["custom-firmware-${PROFILE_NAME}.bin", "/mnt/i/firmware.bin"]
 
-[tasks.custom-firmware-release-install]
-dependencies = ["custom-firmware-release-patch", "install-cargo-binutils"]
-command = "cp"
-args = ["custom-firmware-release.bin", "/mnt/i/firmware.bin"]
-
-
-[tasks.custom-firmware-debug-clean]
+[tasks.custom-firmware-clean]
 script_runner = "@shell"
 script = [
     '''
         rm -f custom-firmware-debug.bin
-    '''
-]
-
-[tasks.custom-firmware-release-clean]
-script_runner = "@shell"
-script = [
-    '''
         rm -f custom-firmware-release.bin
     '''
 ]
 
+# BOOTLOADER RULES
+
+[tasks.bootloader-build]
+dependencies = ["install-cargo-binutils"]
+description = "Compiles bootloader firmware"
+command = "cargo"
+args = ["objcopy", "@@split(COMPILER_FLAGS, )", "--bin=bootloader", "--", "-O", "binary", "bootloader-${PROFILE_NAME}.bin"]
+
+[tasks.bootloader-patch]
+dependencies = ["install-lpc-checksum", "bootloader-build", "install-cargo-binutils"]
+#command = "lpc_checksum"
+#args = ["-p", "LPC11U37_501", "bootloader-${PROFILE_NAME}.bin"]
+script = [
+    '''
+    lpc_checksum -p LPC11U37_501 bootloader-${PROFILE_NAME}.bin
+    # Insert custom version identifier.
+    echo BEBAFECA | xxd -r -ps | dd conv=notrunc of=bootloader-${PROFILE_NAME}.bin seek=36 bs=1
+    '''
+]
+
+[tasks.bootloader-clean]
+script_runner = "@shell"
+script = [
+    '''
+        rm -f bootloader-debug.bin
+        rm -f bootloader-release.bin
+    '''
+]
+
+# GENERIC RULES
+
 [tasks.clean]
 workspace = false
-dependencies = ["custom-firmware-debug-clean", "custom-firmware-release-clean"]
+dependencies = ["custom-firmware-clean", "bootloader-clean"]
 description = "Clean workspace"
 command = "cargo"
 args = ["clean"]
@@ -79,11 +94,8 @@ workspace = false
 command = "cargo"
 args = ["clippy"]
 
-[tasks.debug]
-dependencies = ["custom-firmware-debug-install"]
-
-[tasks.release]
-dependencies = ["custom-firmware-release-install"]
+[tasks.build]
+dependencies = ["custom-firmware-install"]
 
 [tasks.default]
-dependencies = ["debug"]
+dependencies = ["build"]
