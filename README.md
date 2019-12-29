@@ -1,5 +1,7 @@
 # steam_controller_custom_firmware
 
+[![Discord](https://img.shields.io/discord/439418034130780182.svg)](https://discord.gg/MZJbNZY)
+
 A custom firmware for the Steam Controller in Rust.
 
 ## Dependencies
