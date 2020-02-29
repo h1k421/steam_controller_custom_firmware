@@ -1,11 +1,15 @@
 #![no_std]
 #![no_main]
-#![feature(asm)]
+#![feature(asm, const_int_conversion, const_loop, const_if_match, const_panic, const_fn)]
+#![feature(panic_info_message)]
 
+mod usb_descriptors;
 mod system;
 mod lpc11uxx_misc;
 mod rt;
 mod led;
+mod programming_mode;
+mod usb_debug_uart;
 
 use core::slice;
 use core::mem::size_of;
@@ -276,10 +280,7 @@ fn main() -> ! {
         start_program2();
     }
 
-    // TODO: Implement programming mode.
-    loop {
-        cortex_m::asm::wfi();
-    }
+    programming_mode::enter_programming_mode();
 }
 
 #[exception]
@@ -308,7 +309,7 @@ fn PendSV() {
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
-        // Run program1 PendSV Hdlr.
+        programming_mode::PendSV();
     } else {
         let program2_hdlr = unsafe { *(0x2038 as *const extern fn()) };
         program2_hdlr();
@@ -416,7 +417,7 @@ fn CT32B1() {
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
-        // Run program1 ct32b1 hdlr.
+        programming_mode::CT32B1();
     } else {
         let program2_hdlr = unsafe { *(0x208c as *const extern fn()) };
         program2_hdlr();
@@ -434,7 +435,7 @@ fn USART() {
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
-        // Run program1 usart hdlr.
+        programming_mode::USART();
     } else {
         let program2_hdlr = unsafe { *(0x2094 as *const extern fn()) };
         program2_hdlr();
@@ -446,7 +447,7 @@ fn USB_IRQ() {
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
-        // Run program1 usb irq.
+        programming_mode::USB_IRQ();
     } else {
         let program2_hdlr = unsafe { *(0x2098 as *const extern fn()) };
         program2_hdlr();

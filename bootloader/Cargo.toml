@@ -14,4 +14,7 @@ lpc11uxx = {version = "0.3.0", features = ["rt"]}
 lpc11uxx-hal = { git = "https://github.com/lpc-rs/lpc11uxx-hal.git" }
 static_assertions = "1.1.0"
 lpc11uxx-rom = { path = "../lpc11uxx-rom" }
-#bit_field = "0.10"
+heapless = "0.5"
+vcell = "0.1.2"
+bitflags = "1.2"
+bitfield = "0.13"

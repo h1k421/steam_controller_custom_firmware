@@ -41,3 +41,12 @@ pub fn get_main_clock_rate() -> u32 {
         }
     }
 }
+
+pub fn get_system_clock_rate() -> u32 {
+    let peripherals = unsafe { Peripherals::steal() };
+
+    let clock_rate = get_main_clock_rate();
+    let ticks_per_sec = peripherals.SYSCON.sysahbclkdiv.read().div().bits();
+
+    clock_rate / u32::from(ticks_per_sec)
+}
