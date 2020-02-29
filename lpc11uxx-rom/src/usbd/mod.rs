@@ -1,5 +1,4 @@
 use bitfield::bitfield;
-use enum_primitive::FromPrimitive;
 use static_assertions::assert_eq_size;
 use core::ptr::NonNull;
 
@@ -37,7 +36,7 @@ pub struct UsbRomDriver {
     pub msc: *const u32,
     pub dfu: *const u32,
     pub hid: *const HidApi,
-    pub cdc: *const u32,
+    pub cdc: *const CdcApi,
     reserved: u32,
     pub version: u32,
 }
@@ -53,6 +52,10 @@ impl UsbRomDriver {
 
     pub fn hid(&self) -> &HidApi {
         unsafe { &*self.hid }
+    }
+
+    pub fn cdc(&self) -> &CdcApi {
+        unsafe { &*self.cdc }
     }
 }
 
@@ -225,11 +228,19 @@ pub struct SetupPacket {
 
 assert_eq_size!(SetupPacket, u64);
 
-pub type Handle = u32;
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy)]
+pub struct UsbHandle(u32);
 
-pub type Callback = extern "C" fn(Handle) -> i32;
-pub type CallbackParameter = extern "C" fn(Handle, u32) -> i32;
-pub type EndpointHandler = extern "C" fn(Handle, *mut u8, u32) -> i32;
+impl UsbHandle {
+    pub const fn null() -> UsbHandle {
+        UsbHandle(0)
+    }
+}
+
+pub type Callback = extern "C" fn(UsbHandle) -> i32;
+pub type CallbackParameter = extern "C" fn(UsbHandle, u32) -> i32;
+pub type EndpointHandler = extern "C" fn(UsbHandle, *mut u8, u32) -> i32;
 
 #[repr(C)]
 #[derive(Debug, Default)]
@@ -259,14 +270,14 @@ assert_eq_size!(InitParameter, [u8; 0x44]);
 #[repr(C)]
 #[derive(Debug)]
 pub struct CoreApi {
-    pub register_class_handler: extern "C" fn(Handle, EndpointHandler, *mut u8) -> i32,
-    pub register_ep_handler: extern "C" fn(Handle, u32, EndpointHandler, *mut u8) -> i32,
-    pub setup_stage: extern "C" fn(Handle),
-    pub data_in_stage: extern "C" fn(Handle),
-    pub data_out_stage: extern "C" fn(Handle),
-    pub status_in_stage: extern "C" fn(Handle),
-    pub status_out_stage: extern "C" fn(Handle),
-    pub stall_ep0: extern "C" fn(Handle),
+    pub register_class_handler: extern "C" fn(UsbHandle, EndpointHandler, *mut u8) -> i32,
+    pub register_ep_handler: extern "C" fn(UsbHandle, u32, EndpointHandler, *mut u8) -> i32,
+    pub setup_stage: extern "C" fn(UsbHandle),
+    pub data_in_stage: extern "C" fn(UsbHandle),
+    pub data_out_stage: extern "C" fn(UsbHandle),
+    pub status_in_stage: extern "C" fn(UsbHandle),
+    pub status_out_stage: extern "C" fn(UsbHandle),
+    pub stall_ep0: extern "C" fn(UsbHandle),
 }
 
 assert_eq_size!(CoreApi, [u8; 0x20]);
@@ -287,28 +298,28 @@ assert_eq_size!(CoreDescriptors, [u8; 0x14]);
 #[derive(Debug)]
 pub struct HardwareApi {
     pub get_mem_size: extern "C" fn(*const InitParameter) -> u32,
-    pub init: extern "C" fn(*mut Handle, *const CoreDescriptors, *mut InitParameter) -> i32,
-    pub connect: extern "C" fn(Handle, u32),
-    pub isr: extern "C" fn(Handle),
-    pub reset: extern "C" fn(Handle),
-    pub force_full_speed: extern "C" fn(Handle, u32),
-    pub wakeup_config: extern "C" fn(Handle, u32),
-    pub set_address: extern "C" fn(Handle, u32),
-    pub configure: extern "C" fn(Handle, u32),
-    pub configure_ep: extern "C" fn(Handle, *const EndpointDescriptor),
-    pub dir_ctrl_ep: extern "C" fn(Handle, u32),
-    pub enable_ep: extern "C" fn(Handle, u32),
-    pub disable_ep: extern "C" fn(Handle, u32),
-    pub reset_ep: extern "C" fn(Handle, u32),
-    pub set_stall_ep: extern "C" fn(Handle, u32),
-    pub clr_stall_ep: extern "C" fn(Handle, u32),
-    pub set_test_mode: extern "C" fn(Handle, u8) -> i32,
-    pub read_ep: extern "C" fn(Handle, u32, *mut u8) -> u32,
-    pub read_req_ep: extern "C" fn(Handle, u32, *mut u8, u32) -> u32,
-    pub read_setup_pkt: extern "C" fn(Handle, u32, *mut u32) -> u32,
-    pub write_ep: extern "C" fn(Handle, u32, *const u8, u32) -> u32,
-    pub wakeup: extern "C" fn(Handle),
-    pub enable_event: extern "C" fn(Handle, u32, EventType, u32) -> i32,
+    pub init: extern "C" fn(*mut UsbHandle, *const CoreDescriptors, *mut InitParameter) -> i32,
+    pub connect: extern "C" fn(UsbHandle, u32),
+    pub isr: extern "C" fn(UsbHandle),
+    pub reset: extern "C" fn(UsbHandle),
+    pub force_full_speed: extern "C" fn(UsbHandle, u32),
+    pub wakeup_config: extern "C" fn(UsbHandle, u32),
+    pub set_address: extern "C" fn(UsbHandle, u32),
+    pub configure: extern "C" fn(UsbHandle, u32),
+    pub configure_ep: extern "C" fn(UsbHandle, *const EndpointDescriptor),
+    pub dir_ctrl_ep: extern "C" fn(UsbHandle, u32),
+    pub enable_ep: extern "C" fn(UsbHandle, u32),
+    pub disable_ep: extern "C" fn(UsbHandle, u32),
+    pub reset_ep: extern "C" fn(UsbHandle, u32),
+    pub set_stall_ep: extern "C" fn(UsbHandle, u32),
+    pub clr_stall_ep: extern "C" fn(UsbHandle, u32),
+    pub set_test_mode: extern "C" fn(UsbHandle, u8) -> i32,
+    pub read_ep: extern "C" fn(UsbHandle, u32, *mut u8) -> u32,
+    pub read_req_ep: extern "C" fn(UsbHandle, u32, *mut u8, u32) -> u32,
+    pub read_setup_pkt: extern "C" fn(UsbHandle, u32, *mut u32) -> u32,
+    pub write_ep: extern "C" fn(UsbHandle, u32, *const u8, u32) -> u32,
+    pub wakeup: extern "C" fn(UsbHandle),
+    pub enable_event: extern "C" fn(UsbHandle, u32, EventType, u32) -> i32,
 }
 
 assert_eq_size!(HardwareApi, [u8; 0x5c]);
@@ -345,9 +356,15 @@ bitfield! {
 #[repr(C)]
 pub struct HidApi {
     pub get_mem_size: extern "C" fn(*const HidInitParameter) -> u32,
-    pub init: extern "C" fn(Handle, *const HidInitParameter) -> i32,
+    // Mutable reference to init parameter is very much *on purpose*. The
+    // mem_base and mem_size will be updated after the function returns to point
+    // to the rest of the available memory.
+    pub init: extern "C" fn(UsbHandle, *mut HidInitParameter) -> i32,
 }
 assert_eq_size!(HidApi, [u8; 8]);
+
+#[repr(transparent)]
+pub struct HidHandle(u32);
 
 #[repr(C)]
 #[derive(Debug, Default)]
@@ -358,23 +375,109 @@ pub struct HidInitParameter<'a> {
     pub pad: [u8; 3],
     pub intf_desc: Option<NonNull<u8>>,
     pub report_data: Option<&'a HidReport>,
-    pub get_report: Option<extern "C" fn(Handle, *const SetupPacket, *mut *mut u8, *mut u16)>,
-    pub set_report: Option<extern "C" fn(Handle, *const SetupPacket, *const *const u8, u16)>,
-    pub get_phys_desc: Option<extern "C" fn(Handle, *const SetupPacket, *mut *mut u8, *mut u16)>,
-    pub set_idle: Option<extern "C" fn(Handle, *const SetupPacket, u8)>,
-    pub set_protocol: Option<extern "C" fn(Handle, *const SetupPacket, u8)>,
-    pub ep_in_hdlr: Option<extern "C" fn(Handle, *const u8, u32)>,
-    pub ep_out_hdlr: Option<extern "C" fn(Handle, *const u8, u32)>,
-    pub get_report_desc: Option<extern "C" fn(Handle, *const SetupPacket, *mut *mut u8, *mut u16)>,
-    pub ep0_hdlr: Option<extern "C" fn(Handle, *const u8, u32)>,
+    pub get_report: Option<extern "C" fn(HidHandle, *const SetupPacket, *mut *mut u8, *mut u16) -> i32>,
+    pub set_report: Option<extern "C" fn(HidHandle, *const SetupPacket, *const *const u8, u16) -> i32>,
+    pub get_phys_desc: Option<extern "C" fn(HidHandle, *const SetupPacket, *mut *mut u8, *mut u16) -> i32>,
+    pub set_idle: Option<extern "C" fn(HidHandle, *const SetupPacket, u8) -> i32>,
+    pub set_protocol: Option<extern "C" fn(HidHandle, *const SetupPacket, u8) -> i32>,
+    pub ep_in_hdlr: Option<extern "C" fn(EndpointHandler) -> i32>,
+    pub ep_out_hdlr: Option<extern "C" fn(EndpointHandler) -> i32>,
+    pub get_report_desc: Option<extern "C" fn(HidHandle, *const SetupPacket, *mut *mut u8, *mut u16) -> i32>,
+    pub ep0_hdlr: Option<EndpointHandler>,
 }
 assert_eq_size!(HidInitParameter, [u8; 0x38]);
 
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct HidReport {
-    len: u16,
-    idle_time: u8,
-    pad: u8,
-    desc: Option<NonNull<u8>>
+    pub len: u16,
+    pub idle_time: u8,
+    pub pad: u8,
+    pub desc: Option<NonNull<u8>>
+}
+assert_eq_size!(HidReport, [u8; 8]);
+
+#[repr(C)]
+pub struct CdcControl {
+    // Technically USB_CORE_CTRL
+    pub usb_ctrl: UsbHandle,
+    pub notice_buf: [u8; 12],
+    pub line_coding: CdcLineCoding,
+    pub pad0: u8,
+
+    pub cif_num: u8,
+    pub dif_num: u8,
+    pub epin_num: u8,
+    pub epout_num: u8,
+    pub epint_num: u8,
+    pub pad: [u8; 3],
+
+    // User-defined functions
+    pub send_encps_cmd: Option<extern "C" fn(CdcHandle, *mut u8, u16) -> i32>,
+    pub get_encps_resp: Option<extern "C" fn(CdcHandle, *mut *mut u8, *mut u16) -> i32>,
+    pub set_comm_feature: Option<extern "C" fn(CdcHandle, u16, *mut u8, u16) -> i32>,
+    pub get_comm_feature: Option<extern "C" fn(CdcHandle, u16, *mut *mut u8, *mut u16) -> i32>,
+    pub clr_comm_feature: Option<extern "C" fn(CdcHandle, u16) -> i32>,
+    pub set_ctrl_line_state: Option<extern "C" fn(CdcHandle, u16) -> i32>,
+    pub send_break: Option<extern "C" fn(CdcHandle, u16) -> i32>,
+    pub set_line_code: Option<extern "C" fn(CdcHandle, &mut CdcLineCoding) -> i32>,
+
+    /* virtual functions */
+    pub cic_get_request: Option<extern "C" fn(CdcHandle, *const SetupPacket, *mut *mut u8, *mut u16) -> i32>,
+    pub cic_set_request: Option<extern "C" fn(CdcHandle, *const SetupPacket, *const *const u8, u16) -> i32>,
+}
+
+#[repr(transparent)]
+#[derive(PartialEq, Eq)]
+pub struct CdcHandle(*mut CdcControl);
+
+impl CdcHandle {
+    pub const fn null() -> CdcHandle {
+        CdcHandle(core::ptr::null_mut())
+    }
+
+    pub unsafe fn inner_ctrl(&mut self) -> &mut CdcControl {
+        &mut *self.0
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct CdcInitParameter {
+    pub mem_base: u32,
+    pub mem_size: u32,
+    pub cif_intf_desc: Option<NonNull<u8>>,
+    pub dif_intf_desc: Option<NonNull<u8>>,
+    pub cic_get_request: Option<extern "C" fn(CdcHandle, *const SetupPacket, *mut *mut u8, *mut u16) -> i32>,
+    pub cic_set_request: Option<extern "C" fn(CdcHandle, *const SetupPacket, *const *const u8, u16) -> i32>,
+    pub cdc_bulkin_hdlr: Option<extern "C" fn(UsbHandle, *mut (), u32) -> i32>,
+    pub cdc_bulkout_hdlr: Option<extern "C" fn(UsbHandle, *mut (), u32) -> i32>,
+    pub send_encps_cmd: Option<extern "C" fn(CdcHandle, *mut u8, u16) -> i32>,
+    pub get_encps_resp: Option<extern "C" fn(CdcHandle, *mut *mut u8, *mut u16) -> i32>,
+    pub set_comm_feature: Option<extern "C" fn(CdcHandle, u16, *mut u8, u16) -> i32>,
+    pub get_comm_feature: Option<extern "C" fn(CdcHandle, u16, *mut *mut u8, *mut u16) -> i32>,
+    pub clr_comm_feature: Option<extern "C" fn(CdcHandle, u16) -> i32>,
+    pub set_ctrl_line_state: Option<extern "C" fn(CdcHandle, u16) -> i32>,
+    pub send_break: Option<extern "C" fn(CdcHandle, u16) -> i32>,
+    pub set_line_code: Option<extern "C" fn(CdcHandle, &mut CdcLineCoding) -> i32>,
+    pub cdc_interruptep_hdlr: Option<extern "C" fn(UsbHandle, *mut (), u32) -> i32>,
+    pub cdc_ep0_hdlr: Option<extern "C" fn(UsbHandle, *mut (), u32) -> i32>,
+}
+assert_eq_size!(CdcInitParameter, [u8; 0x48]);
+
+#[repr(C)]
+pub struct CdcApi {
+    pub get_mem_size: extern "C" fn(*const CdcInitParameter) -> u32,
+    pub init: extern "C" fn(UsbHandle, *mut CdcInitParameter, *mut CdcHandle) -> i32,
+    pub send_notification: extern "C" fn(CdcHandle, u8, u16) -> i32,
+}
+assert_eq_size!(CdcApi, [u8; 12]);
+
+
+#[repr(C)]
+pub struct CdcLineCoding {
+    pub dte_rate: u32,
+    pub char_format: u8,
+    pub parity_type: u8,
+    pub data_bits: u8
 }
