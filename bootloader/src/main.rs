@@ -84,7 +84,11 @@ fn set_battery_power(state: bool) {
     }
 }
 
-fn set_gpreg1_in_programming_mode(enable: bool) {
+/// Sets a special register to re-enter programming mode when when the device
+/// resets.
+///
+/// This register persists through wakes and resets.
+fn enter_programming_mode_on_reboot(enable: bool) {
     let peripherals = unsafe { Peripherals::steal() };
 
     peripherals.PMU.gpreg[1].write(|v| unsafe { v.gpdata().bits(!enable as u32) });
@@ -227,7 +231,7 @@ fn main() -> ! {
     }
 
     set_battery_power(true);
-    set_gpreg1_in_programming_mode(true);
+    enter_programming_mode_on_reboot(true);
 
     // The real firmware uses a table like the following and calls
     // Chip_IOCON_PinMuxSet in a loop to setup the pinmuxing. Unfortunately, the
@@ -261,7 +265,7 @@ fn main() -> ! {
     if peripherals.PMU.gpreg[0].read().bits() == 0xecaabac0 {
         peripherals.PMU.gpreg[0].write(|v| unsafe { v.gpdata().bits(0) });
     } else if unsafe { *(0x2024 as *const u32) == 0xecaabac0 && EEPROM_MAGIC.version != 0 } {
-        set_gpreg1_in_programming_mode(false);
+        enter_programming_mode_on_reboot(false);
 
         // Enable RAM1 clock before jumping to program2.
         peripherals
