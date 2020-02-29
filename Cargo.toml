@@ -9,6 +9,8 @@ members = [
 codegen-units = 1 # better optimizations
 debug = true # symbols are nice and they don't increase the size on Flash
 lto = true # better optimizations
+opt-level = 'z'
+panic = 'abort'
 
 #[patch.crates-io.usb-device]
 #path = "../usb-device"

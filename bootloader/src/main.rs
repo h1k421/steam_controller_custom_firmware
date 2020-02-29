@@ -92,6 +92,8 @@ fn set_gpreg1_in_programming_mode(enable: bool) {
 
 /// Someone is going to need to explain this function to me. I can't figure
 /// out if it actually does anything useful...
+// Inline never because of the huge stack usage of this function.
+#[inline(never)]
 fn weird_flash_function(mut ram_page: u32) {
     let mut page_content = [0; 0x1000];
 
