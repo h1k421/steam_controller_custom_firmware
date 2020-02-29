@@ -32,7 +32,7 @@ pub fn get_main_clock_rate() -> u32 {
         },
         WATCHDOG_OSCILLATOR => {
             let wdtoscctrl = peripherals.SYSCON.wdtoscctrl.read();
-            WDT_OSC_RATE[wdtoscctrl.divsel().bits() as usize] / (u32::from(wdtoscctrl.freqsel().bits()) * 2 + 2)
+            WDT_OSC_RATE[wdtoscctrl.freqsel().bits() as usize] / (u32::from(wdtoscctrl.divsel().bits()) * 2 + 2)
         },
         PLL_OUTPUT => {
             let pll_reg = peripherals.SYSCON.syspllctrl.read().msel().bits();
