@@ -254,10 +254,10 @@ fn main() -> ! {
     set_battery_power(!usb_disconnected);
 
     let mut should_copy_ram_to_flash = [0; 4];
-    iap::eeprom_read(0x500, &mut should_copy_ram_to_flash, 4);
+    iap::eeprom_read(0x500, &mut should_copy_ram_to_flash, unsafe { MAIN_CLOCK_FREQ } / 1024);
     let should_copy_ram_to_flash = u32::from_le_bytes(should_copy_ram_to_flash);
     if should_copy_ram_to_flash != 0 {
-        iap::eeprom_write(0x500, &0u32.to_le_bytes(), 4);
+        iap::eeprom_write(0x500, &0u32.to_le_bytes(), unsafe { MAIN_CLOCK_FREQ } / 1024);
         weird_flash_function(should_copy_ram_to_flash);
         setup_watchdog(100);
     }
