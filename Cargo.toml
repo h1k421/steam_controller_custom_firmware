@@ -2,7 +2,8 @@
 
 members = [
     "firmware",
-    "bootloader"
+    "bootloader",
+    "driver-cli"
 ]
 
 [profile.release]
