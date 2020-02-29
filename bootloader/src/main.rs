@@ -12,7 +12,7 @@ use core::mem::size_of;
 
 use cortex_m_rt::{entry, exception};
 use lpc11uxx_rom::iap;
-use lpc11uxx::{interrupt, CorePeripherals, Peripherals};
+use lpc11uxx::{interrupt, Peripherals};
 
 static mut MAIN_CLOCK_FREQ: u32 = 0;
 
@@ -121,9 +121,9 @@ fn setup_pinmux() {
     let peripherals = unsafe { Peripherals::steal() };
 
     peripherals.IOCON.pio0_3.write(|v| v.func().pio0_3().mode().pull_down());
-    peripherals.IOCON.pio0_6.write(|v| v.func().usb_connect().mode().inactive());
-    peripherals.IOCON.pio1_17.write(|v| v.func().rxd().mode().inactive());
-    peripherals.IOCON.pio1_18.write(|v| v.func().txd().mode().inactive());
+    peripherals.IOCON.pio0_6.write(|v| v.func().usb_connect().mode().floating());
+    peripherals.IOCON.pio1_17.write(|v| v.func().rxd().mode().floating());
+    peripherals.IOCON.pio1_18.write(|v| v.func().txd().mode().floating());
 }
 
 fn watchdog_init(syscon: &lpc11uxx::SYSCON, watchdog: &lpc11uxx::WWDT) {
@@ -217,7 +217,7 @@ fn main() -> ! {
 
     // If a brown-out is detected, we should kill the battery and die.
     if !usb_disconnected && peripherals.SYSCON.sysrststat.read().bod().bit_is_set() {
-        peripherals.SYSCON.sysrststat.write(|f| f.bod().reset_clear());
+        peripherals.SYSCON.sysrststat.write_with_zero(|f| f.bod().reset_clear());
         set_battery_power(false);
         loop {
             cortex_m::asm::wfi();

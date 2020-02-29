@@ -10,5 +10,8 @@ codegen-units = 1 # better optimizations
 debug = true # symbols are nice and they don't increase the size on Flash
 lto = true # better optimizations
 
-[patch.crates-io.usb-device]
-path = "../usb-device"
+#[patch.crates-io.usb-device]
+#path = "../usb-device"
+
+[patch.crates-io.lpc11uxx]
+git = "https://github.com/roblabla/lpc-pac"

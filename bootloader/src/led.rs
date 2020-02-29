@@ -60,7 +60,7 @@ pub fn initialize() {
     peripherals
         .IOCON
         .pio0_21
-        .write(|writer| writer.func().ct16b1_mat0().mode().inactive());
+        .write(|writer| writer.func().ct16b1_mat0().mode().floating());
 }
 
 pub fn set_intensity(intensity: u16) {

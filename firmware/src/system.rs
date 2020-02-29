@@ -150,7 +150,7 @@ pub fn initialize() {
         peripherals
             .IOCON
             .pio0_6
-            .write(|writer| writer.func().usb_connect().mode().inactive());
+            .write(|writer| writer.func().usb_connect().mode().floating());
     }
 
     // Enable SRAM1

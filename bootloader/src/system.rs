@@ -1,4 +1,4 @@
-use lpc11uxx::{CorePeripherals, Peripherals};
+use lpc11uxx::Peripherals;
 
 pub static CRYSTAL_OSCILLATOR_CLOCK_RATE: u32 = 12_000_000;
 pub static SYSTEM_PPL_MSET: u8 = 3;
@@ -13,8 +13,8 @@ fn stage1() {
         .pdruncfg
         .modify(|_, writer| writer.sysosc_pd().powered());
 
-    // There's supposed to be a loop from 0 to 0x1600 here, but it doesn't look
-    // useful?
+    // There's supposed to be an empty loop from 0 to 0x1600 here, but it
+    // doesn't look necessary?
 
     // Select Crystal Oscillator as System PLL clock source
     peripherals

@@ -21,9 +21,9 @@ static WDT_OSC_RATE: [u32; 16] = [
 
 
 pub fn get_main_clock_rate() -> u32 {
-    use lpc11uxx::syscon::mainclksel::SELR::*;
+    use lpc11uxx::syscon::mainclksel::SEL_A::*;
     let peripherals = unsafe { Peripherals::steal() };
-    match peripherals.SYSCON.mainclksel.read().sel() {
+    match peripherals.SYSCON.mainclksel.read().sel().variant() {
         IRC_OSCILLATOR => {
             12_000_000
         },
