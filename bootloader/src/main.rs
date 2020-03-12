@@ -32,7 +32,7 @@ struct EepromData {
     version: u32
 }
 
-static mut EEPROM_MAGIC: EepromData = EepromData {
+static mut EEPROM_CACHE: EepromData = EepromData {
     magic: 0,
     unknown: 0,
     version: 0,
@@ -40,22 +40,22 @@ static mut EEPROM_MAGIC: EepromData = EepromData {
 
 fn check_eeprom_magic() {
     unsafe {
-        let eeprom_magic_ptr = slice::from_raw_parts_mut(&mut EEPROM_MAGIC as *mut _ as *mut u8, size_of::<EepromData>());
+        let eeprom_magic_ptr = slice::from_raw_parts_mut(&mut EEPROM_CACHE as *mut _ as *mut u8, size_of::<EepromData>());
         iap::eeprom_read(0, eeprom_magic_ptr, MAIN_CLOCK_FREQ / 1024);
-        if EEPROM_MAGIC.magic != 0xa55a {
-            EEPROM_MAGIC.magic = 0xa55a;
-            EEPROM_MAGIC.unknown = 0;
+        if EEPROM_CACHE.magic != 0xa55a {
+            EEPROM_CACHE.magic = 0xa55a;
+            EEPROM_CACHE.unknown = 0;
             // Steam controller writes 0, but all the steam controllers out there
             // have 10 here it seems. And since this eventually affects pinmux,
             // we really want to have the right value here.
-            EEPROM_MAGIC.version = 10;
-            write_eeprom_magic();
+            EEPROM_CACHE.version = 10;
+            write_eeprom_cache();
         }
     }
 }
 
-fn write_eeprom_magic() {
-    let eeprom_magic_ptr = unsafe { slice::from_raw_parts(&EEPROM_MAGIC as *const _ as *const u8, size_of::<EepromData>()) };
+fn write_eeprom_cache() {
+    let eeprom_magic_ptr = unsafe { slice::from_raw_parts(&EEPROM_CACHE as *const _ as *const u8, size_of::<EepromData>()) };
     iap::eeprom_write(0, eeprom_magic_ptr, unsafe { MAIN_CLOCK_FREQ } / 1024);
 }
 
@@ -75,10 +75,10 @@ fn set_battery_power(state: bool) {
     let peripherals = unsafe { Peripherals::steal() };
 
     unsafe {
-        if EEPROM_MAGIC.version < 5 {
+        if EEPROM_CACHE.version < 5 {
             peripherals.GPIO_PORT.b140.write(|v| v.pbyte().bit(state));
             peripherals.GPIO_PORT.dir[1].modify(|_, w| w.dirp8().set_bit());
-        } else if EEPROM_MAGIC.version < 8 {
+        } else if EEPROM_CACHE.version < 8 {
             peripherals.GPIO_PORT.b132.write(|v| v.pbyte().bit(state));
             peripherals.GPIO_PORT.dir[1].modify(|_, w| w.dirp0().set_bit());
         } else {
@@ -268,7 +268,7 @@ fn main() -> ! {
 
     if peripherals.PMU.gpreg[0].read().bits() == 0xecaabac0 {
         peripherals.PMU.gpreg[0].write(|v| unsafe { v.gpdata().bits(0) });
-    } else if unsafe { *(0x2024 as *const u32) == 0xecaabac0 && EEPROM_MAGIC.version != 0 } {
+    } else if unsafe { *(0x2024 as *const u32) == 0xecaabac0 && EEPROM_CACHE.version != 0 } {
         enter_programming_mode_on_reboot(false);
 
         // Enable RAM1 clock before jumping to program2.

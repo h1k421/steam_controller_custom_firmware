@@ -7,6 +7,7 @@ use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::NVIC;
 use heapless::spsc::Queue;
 use static_assertions::const_assert_eq;
+use core::convert::TryInto;
 
 use crate::MAIN_CLOCK_FREQ;
 
@@ -420,17 +421,15 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
                 let bootloader_version = *(0 as *const u32).offset(9);
                 HID_REPORT_PACKET[8..12].copy_from_slice(&bootloader_version.to_le_bytes());
                 HID_REPORT_PACKET[12] = 9;
-                HID_REPORT_PACKET[13..17].copy_from_slice(&super::EEPROM_MAGIC.version.to_le_bytes());
+                HID_REPORT_PACKET[13..17].copy_from_slice(&super::EEPROM_CACHE.version.to_le_bytes());
             }
             return;
         },
-        // REINVOKE_ISP
         0x90 => {
             crate::usb_debug_uart::usb_putb(b"REINVOKE_ISP\n");
             unsafe { SHOULD_REINVOKE_ISP = true; }
             return;
         },
-        // ERASE_PROGRAM2
         0x91 => {
             crate::usb_debug_uart::usb_putb(b"ERASE_PROGRAM2\n");
             write_report_0x94(2);
@@ -451,8 +450,8 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
             write_report_0x94(0);
             return;
         },
-        // FLASH_PROGRAM2
         0x92 => {
+            // Spams a bit too much :D
             //crate::usb_debug_uart::usb_putb(b"FLASH_FIRMWARE\n");
 
             let err = write_data_to_program2_flash(&buffer[2..2 + usize::from(buffer[1])]);
@@ -465,7 +464,6 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
             }
             return;
         },
-        // VERIFY_FIRMWARE_SIG
         0x93 => {
             crate::usb_debug_uart::usb_putb(b"VERIFY_FIRMWARE_SIG\n");
             let err = end_flash_verify_firmware_sig(&buffer[2..2 + 0x10]);
@@ -481,9 +479,8 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
             //crate::usb_debug_uart::usb_putb(b"\n");
             return;
         },
-        // UART_RESET_RESTART_WATCHDOG
         0x95 => {
-            crate::usb_debug_uart::usb_putb(b"UART_RESET_RESTART_WATCHDOG\n");
+            crate::usb_debug_uart::usb_putb(b"RESET_WHOLE_SOC\n");
             if buffer[1] == 0 {
                 usart_send_reset();
                 super::setup_watchdog(10_000);
@@ -491,27 +488,29 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
             return;
         },
         0x97 => {
-            crate::usb_debug_uart::usb_putb(b"UART_TRANSMIT_Y\n");
-            //usart_send_text_transmission(b"Y");
+            crate::usb_debug_uart::usb_putb(b"NRF_ERASE_PROGRAM\n");
+            usart_send_text_transmission(b"Y");
             write_report_0x94(2);
             return;
         },
         0x98 => {
-            crate::usb_debug_uart::usb_putb(b"UART_TRANSMIT_Z\n");
-            //usart_send_z_packet(&buffer[2..2 + usize::from(buffer[1])]);
+            // crate::usb_debug_uart::usb_putb(b"NRF_FLASH_PROGRAM\n");
+            usart_send_z_packet(&buffer[2..2 + usize::from(buffer[1])]);
             write_report_0x94(2);
             return;
         },
         0x99 => {
-            crate::usb_debug_uart::usb_putb(b"UART_SEND_SIG_PACKET\n");
-            //usart_send_sig_packet(&buffer[2..2 + 0x10]);
+            crate::usb_debug_uart::usb_putb(b"NRF_VERIFY_FIRMWARE_SIG\n");
+            usart_send_sig_packet(&buffer[2..2 + 0x10]);
             write_report_0x94(2);
             return;
         },
         0xa0 => {
-            crate::usb_debug_uart::usb_putb(b"SCARY?\n");
+            crate::usb_debug_uart::usb_putb(b"SET_HARDWARE_VERSION\n");
             if buffer[1] == 4 {
-                // Don't implement this, it's scary.
+                let version = u32::from_le_bytes(buffer[2..6].try_into().unwrap());
+                unsafe { super::EEPROM_CACHE.version = version; }
+                super::write_eeprom_cache();
             }
             return;
         },
@@ -522,8 +521,6 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
         }
     }
 }
-
-// 99246899 49230817 54462693 99019766
 
 extern fn hid_set_report_handler(_handle: HidHandle, setup_packet: *const SetupPacket, buffer: *const *const u8, length: u16) -> i32 {
     if length != 0 {
@@ -777,7 +774,7 @@ fn usart_send_text_transmission(data: &[u8]) {
     })
 }
 
-fn usart_send_r() {
+fn usart_send_R() {
     usart_send_text_transmission(b"R");
 }
 
@@ -805,18 +802,18 @@ fn usart_send_reset() {
     usart_send_text_transmission(b"\\RESET");
 }
 
-fn send_usart_r_if_usb_disconnected() {
+fn send_usart_R_if_usb_disconnected() {
     let usb_disconnected = super::is_usb_disconnected();
     if !usb_disconnected {
         for _i in 0..50_000 {
             // Do nothing.
             // TODO: Compiler barrier to avoid the loop disappearing
         }
-        usart_send_r();
+        usart_send_R();
     }
 }
 
-fn send_usart_v_packet(data: &[u8]) {
+fn send_usart_V_packet(data: &[u8]) {
     cortex_m::interrupt::free(|_v| {
         usart_send_02();
         usart_send_escaped_str(b"V");
@@ -985,7 +982,7 @@ fn send_usart_packet_if_timer_elapsed() {
             USART_PACKET[4..8].copy_from_slice(&counter.to_le_bytes());
 
             if SHOULD_SEND_USART_PACKET {
-                send_usart_v_packet(&USART_PACKET);
+                send_usart_V_packet(&USART_PACKET);
             }
         }
     }
@@ -993,17 +990,19 @@ fn send_usart_packet_if_timer_elapsed() {
 
 pub fn enter_programming_mode() -> ! {
     init_usb();
-    //init_usart();
-    //send_usart_r_if_usb_disconnected();
+    init_usart();
+    send_usart_R_if_usb_disconnected();
     init_led_ctrl();
     tick_led_blink(0xff);
-    //init_timer_32_1();
+    init_timer_32_1();
     loop {
-        //if unsafe { SHOULD_REINVOKE_ISP } {
-        //    reinvoke_isp();
-        //}
+        if unsafe { SHOULD_REINVOKE_ISP } {
+            reinvoke_isp();
+        }
+
+        // Extension: USB CDC
         crate::usb_debug_uart::usb_flush();
-        //send_usart_packet_if_timer_elapsed();
+        send_usart_packet_if_timer_elapsed();
         cortex_m::asm::wfi();
     }
 }
