@@ -1,11 +1,9 @@
 use lpc11uxx_rom::{RomDriver, iap};
 use lpc11uxx_rom::usbd::{HidInitParameter, InitParameter, CoreDescriptors,
     SetupPacket, HidReport, DeviceDescriptor, UsbHandle, HidHandle};
-use lpc11uxx::{Peripherals, CorePeripherals, Interrupt};
+use lpc11uxx::{Peripherals, CorePeripherals, Interrupt, SCB};
 use crate::lpc11uxx_misc::*;
-use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::NVIC;
-use heapless::spsc::Queue;
 use static_assertions::const_assert_eq;
 use core::convert::TryInto;
 
@@ -18,10 +16,8 @@ pub static mut USBD_HANDLE: UsbHandle = UsbHandle::null();
 static mut TIMER_ENABLED: bool = false;
 static mut TIMER_ELAPSED: bool = false;
 static mut SHOULD_REINVOKE_ISP: bool = false;
-static mut USART_STATE: u8 = 0;
 static mut CUR_LED_BLINK_TICK: u8 = 0;
 static mut USART_PACKET: [u8; 0x10] = [0; 0x10];
-static mut SHOULD_SEND_USART_PACKET: bool = false;
 static mut HID_REPORT_PACKET: [u8; 0x40] = [0; 0x40];
 static mut FLASH_BUFFER_LEN: usize = 0;
 static mut FLASH_BUFFER: [u8; 512] = [0; 512];
@@ -272,6 +268,13 @@ extern fn hid_get_report_handler(_handle: HidHandle, setup_packet: *const SetupP
     0
 }
 
+pub fn copy_hid_report(data: &mut [u8]) {
+    unsafe {
+        let max_len = core::cmp::min(data.len(), HID_REPORT_PACKET.len());
+        data[..max_len].copy_from_slice(&HID_REPORT_PACKET[..max_len]);
+    }
+}
+
 fn write_data_to_program2_flash(data: &[u8]) -> i32 {
     unsafe {
         let mut buffer_cap = FLASH_BUFFER.len() - FLASH_BUFFER_LEN;
@@ -396,16 +399,17 @@ fn end_flash_verify_firmware_sig(sig: &[u8]) -> u32 {
     return 0;
 }
 
-fn write_report_0x94(err_code: u16) {
+pub fn write_report_0x94(err_code: u16) -> usize {
     unsafe {
         HID_REPORT_PACKET = [0; 0x40];
         HID_REPORT_PACKET[0] = 0x94;
         HID_REPORT_PACKET[1] = 2;
         HID_REPORT_PACKET[2..4].copy_from_slice(&err_code.to_le_bytes());
+        4
     }
 }
 
-fn hid_handle_set_feature_report(buffer: &[u8]) {
+pub fn hid_handle_set_feature_report(buffer: &[u8]) -> usize {
     match buffer[0] {
         // GET_HWINFO
         0x83 => {
@@ -423,12 +427,12 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
                 HID_REPORT_PACKET[12] = 9;
                 HID_REPORT_PACKET[13..17].copy_from_slice(&super::EEPROM_CACHE.version.to_le_bytes());
             }
-            return;
+            0
         },
         0x90 => {
             crate::usb_debug_uart::usb_putb(b"REINVOKE_ISP\n");
             unsafe { SHOULD_REINVOKE_ISP = true; }
-            return;
+            return 0;
         },
         0x91 => {
             crate::usb_debug_uart::usb_putb(b"ERASE_PROGRAM2\n");
@@ -439,16 +443,13 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
             }
             let err = iap::prepare_sector_for_write(2, 0x1f);
             if err != 0 {
-                write_report_0x94(1);
-                return;
+                return write_report_0x94(1);
             }
             let err = iap::erase_sectors(2, 0x1f, unsafe { MAIN_CLOCK_FREQ } / 1024);
             if err != 0 {
-                write_report_0x94(1);
-                return;
+                return write_report_0x94(1);
             }
-            write_report_0x94(0);
-            return;
+            return write_report_0x94(0);
         },
         0x92 => {
             // Spams a bit too much :D
@@ -462,12 +463,12 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
                 HID_REPORT_PACKET = [0; 0x40];
                 HID_REPORT_PACKET[0] = 0x92;
             }
-            return;
+            return 2;
         },
         0x93 => {
             crate::usb_debug_uart::usb_putb(b"VERIFY_FIRMWARE_SIG\n");
             let err = end_flash_verify_firmware_sig(&buffer[2..2 + 0x10]);
-            write_report_0x94(err as u16);
+            return write_report_0x94(err as u16);
             //let peripherals = unsafe { Peripherals::steal() };
             //crate::usb_debug_uart::usb_putnbr_hex(peripherals.FLASHCTRL.fmsw0.read().bits());
             //crate::usb_debug_uart::usb_putb(b" ");
@@ -477,33 +478,29 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
             //crate::usb_debug_uart::usb_putb(b" ");
             //crate::usb_debug_uart::usb_putnbr_hex(peripherals.FLASHCTRL.fmsw3.read().bits());
             //crate::usb_debug_uart::usb_putb(b"\n");
-            return;
         },
         0x95 => {
             crate::usb_debug_uart::usb_putb(b"RESET_WHOLE_SOC\n");
             if buffer[1] == 0 {
-                usart_send_reset();
+                crate::nrf_comms::usart_send_reset();
                 super::setup_watchdog(10_000);
             }
-            return;
+            return 0;
         },
         0x97 => {
             crate::usb_debug_uart::usb_putb(b"NRF_ERASE_PROGRAM\n");
-            usart_send_text_transmission(b"Y");
-            write_report_0x94(2);
-            return;
+            crate::nrf_comms::usart_send_text_transmission(b"Y");
+            return write_report_0x94(2);
         },
         0x98 => {
             // crate::usb_debug_uart::usb_putb(b"NRF_FLASH_PROGRAM\n");
-            usart_send_z_packet(&buffer[2..2 + usize::from(buffer[1])]);
-            write_report_0x94(2);
-            return;
+            crate::nrf_comms::usart_send_z_packet(&buffer[2..2 + usize::from(buffer[1])]);
+            return write_report_0x94(2);
         },
         0x99 => {
             crate::usb_debug_uart::usb_putb(b"NRF_VERIFY_FIRMWARE_SIG\n");
-            usart_send_sig_packet(&buffer[2..2 + 0x10]);
-            write_report_0x94(2);
-            return;
+            crate::nrf_comms::usart_send_sig_packet(&buffer[2..2 + 0x10]);
+            return write_report_0x94(2);
         },
         0xa0 => {
             crate::usb_debug_uart::usb_putb(b"SET_HARDWARE_VERSION\n");
@@ -512,12 +509,12 @@ fn hid_handle_set_feature_report(buffer: &[u8]) {
                 unsafe { super::EEPROM_CACHE.version = version; }
                 super::write_eeprom_cache();
             }
-            return;
+            return 0;
         },
         n => {
             crate::usb_debug_uart::usb_putnbr_hex(n as u32);
             crate::usb_debug_uart::usb_putb(b"\n");
-            return;
+            return 0;
         }
     }
 }
@@ -649,159 +646,6 @@ fn init_usb() -> i32 {
     return 0;
 }
 
-fn init_usart() {
-    let mut core_peripherals = unsafe { CorePeripherals::steal() };
-    let peripherals = unsafe { Peripherals::steal() };
-
-    unsafe {
-        USART_STATE = 0;
-    }
-
-    // RingBuffer_Init is unnecessary - we're using ArrayDeque
-
-    // Chip_UART_Init
-    peripherals.SYSCON.sysahbclkctrl.modify(|_, writer| writer.usart().enabled());
-    peripherals.SYSCON.uartclkdiv.write(|v| unsafe { v.div().bits(1) });
-    peripherals.USART.fcr_mut().write(|v| v
-        .fifoen().enabled()
-        .rxfifores().clear()
-        .txfifores().clear());
-    peripherals.USART.lcr.write(|v| v
-        .wls()._8_bit_character_leng()
-        .sbs()._1_stop_bit());
-    peripherals.USART.fdr.write(|v| unsafe { v.mulval().bits(1) });
-
-    // ChipUART_SetupFifos
-    peripherals.USART.fcr_mut().write(|v| v
-        .fifoen().enabled()
-        .rxtl().level2());
-
-    // Enable access to the divisor registers.
-    peripherals.USART.lcr.modify(|_, v| v.dlab().enable_access_to_div());
-
-    // Set the USART divisor latch to 3
-    peripherals.USART.dll().write(|v| unsafe { v.dllsb().bits(3) });
-
-    peripherals.USART.fdr.write(|v| unsafe {
-        v
-            .divaddval().bits(1)
-            .mulval().bits(11)
-    });
-
-    // Disable access to the divisor registers, restore access to USART read/write registers.
-    peripherals.USART.lcr.modify(|_, v| v.dlab().disable_access_to_di());
-
-    unsafe { NVIC::unmask(Interrupt::USART) };
-    peripherals.USART.ier_mut().modify(|_, v| v
-        .rbrinten().enable_the_rda_inter()
-        .rlsinten().enable_the_rls_inter());
-
-    // TODO: Make sure those priority numbers are correct. NVIC_SetPriority does
-    // fancy bit shifting I don't fully understand at 3AM.
-    unsafe { core_peripherals.NVIC.set_priority(Interrupt::USART, 0) };
-    unsafe { core_peripherals.SCB.set_priority(SystemHandler::PendSV, 1) };
-}
-
-static mut USART_RING_BUFFER: Queue<u8, heapless::consts::U256> = Queue(heapless::i::Queue::new());
-
-fn RingBuffer_InsertMult(ring_buffer: &mut Queue<u8, heapless::consts::U256>, data: &[u8]) -> usize {
-    let old_len = ring_buffer.len();
-    // TODO: Please tell me this turns into a simple memcpy...
-    for item in data {
-        if ring_buffer.enqueue(*item).is_err() {
-            break;
-        }
-    }
-    ring_buffer.len() - old_len
-}
-
-fn usart_send_raw_str(data: &[u8]) -> usize {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    // First, disable send interrupts.
-    peripherals.USART.ier_mut().modify(|_, v| v.threinten().disable_the_thre_int());
-
-    // Insert data to the ring buffer
-    let mut inserted_len = RingBuffer_InsertMult(unsafe { &mut USART_RING_BUFFER }, data);
-
-    // Send the contents of the ring buffer
-    while peripherals.USART.lsr.read().thre().is_empty() {
-        if let Some(val) = unsafe { USART_RING_BUFFER .dequeue() } {
-            peripherals.USART.thr_mut().write(|v| unsafe { v.thr().bits(val) });
-        } else {
-            break;
-        }
-    }
-
-    // Try to insert some more contents in the ring buffer.
-    inserted_len += RingBuffer_InsertMult(unsafe { &mut USART_RING_BUFFER }, &data[inserted_len..]);
-
-    // Re-enable send interrupts
-    peripherals.USART.ier_mut().modify(|_, v| v.threinten().enable_the_thre_inte());
-
-    inserted_len
-}
-
-fn usart_send_02() {
-    usart_send_raw_str(b"\x02");
-}
-
-// TODO: Write unit tests for this function cuz it's almost guaranteed to be wrong lol.
-fn usart_send_escaped_str(mut data: &[u8]) {
-    while let Some(pos) = data.iter().position(|&v| v == 0x02 || v == 0x03 || v == 0x1f) {
-        if pos != 0 {
-            usart_send_raw_str(&data[..pos]);
-        }
-        usart_send_raw_str(&[0x1fu8, data[pos]]);
-        data = &data[pos + 1..];
-    }
-
-    if !data.is_empty() {
-        usart_send_raw_str(data);
-    }
-}
-
-fn usart_send_03() {
-    usart_send_raw_str(b"\x03");
-}
-
-fn usart_send_text_transmission(data: &[u8]) {
-    // Replace disable_irq/enable_irq pairs with cortex_m::interrupt::free
-    cortex_m::interrupt::free(|_| {
-        usart_send_02();
-        usart_send_escaped_str(data);
-        usart_send_03();
-    })
-}
-
-fn usart_send_R() {
-    usart_send_text_transmission(b"R");
-}
-
-// I assume it's a signature, but I'm not sure. And I've never seen steam use it
-// soo...
-fn usart_send_sig_packet(data: &[u8]) {
-    cortex_m::interrupt::free(|_| {
-        usart_send_02();
-        usart_send_escaped_str(b"[");
-        usart_send_escaped_str(&data[..0x10]);
-        usart_send_03();
-    })
-}
-
-fn usart_send_z_packet(data: &[u8]) {
-    cortex_m::interrupt::free(|_| {
-        usart_send_02();
-        usart_send_escaped_str(b"Z");
-        usart_send_escaped_str(data);
-        usart_send_03();
-    })
-}
-
-fn usart_send_reset() {
-    usart_send_text_transmission(b"\\RESET");
-}
-
 fn send_usart_R_if_usb_disconnected() {
     let usb_disconnected = super::is_usb_disconnected();
     if !usb_disconnected {
@@ -809,18 +653,8 @@ fn send_usart_R_if_usb_disconnected() {
             // Do nothing.
             // TODO: Compiler barrier to avoid the loop disappearing
         }
-        usart_send_R();
+        crate::nrf_comms::usart_send_R();
     }
-}
-
-fn send_usart_V_packet(data: &[u8]) {
-    cortex_m::interrupt::free(|_v| {
-        usart_send_02();
-        usart_send_escaped_str(b"V");
-        let len = usize::from(data[3]);
-        usart_send_escaped_str(&data[2..2 + len]);
-        usart_send_03();
-    });
 }
 
 // TODO: Make this generic by clock
@@ -981,16 +815,14 @@ fn send_usart_packet_if_timer_elapsed() {
             let counter = u32::from_le_bytes(counter) + 1;
             USART_PACKET[4..8].copy_from_slice(&counter.to_le_bytes());
 
-            if SHOULD_SEND_USART_PACKET {
-                send_usart_V_packet(&USART_PACKET);
-            }
+            crate::nrf_comms::usart_send_V_packet_maybe(&USART_PACKET);
         }
     }
 }
 
 pub fn enter_programming_mode() -> ! {
     init_usb();
-    init_usart();
+    crate::nrf_comms::init_usart();
     send_usart_R_if_usb_disconnected();
     init_led_ctrl();
     tick_led_blink(0xff);
@@ -1040,49 +872,10 @@ pub fn USB_IRQ() {
 }
 
 pub fn PendSV() {
-    loop {}
-}
-
-fn handle_usart_data() {
-    let peripherals = unsafe { Peripherals::steal() };
-    let data = peripherals.USART.rbr().read().rbr().bits();
-    // TODO: Do stuff
+    SCB::clear_pendsv();
+    crate::nrf_comms::handle_pendsv();
 }
 
 pub fn USART() {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    if peripherals.USART.iir().read().intid().is_receive_line_status() {
-        let lsr = peripherals.USART.lsr.read();
-        let oe = lsr.oe().is_active();
-        let pe = lsr.pe().is_active();
-        let fe = lsr.fe().is_active();
-        let bi = lsr.bi().is_active();
-        let rxfe = lsr.rxfe().is_erro();
-
-        if oe || pe || fe || bi || rxfe {
-            peripherals.USART.rbr().read();
-        }
-
-        if lsr.rdr().is_valid() {
-            peripherals.USART.rbr().read();
-        }
-    }
-
-    while peripherals.USART.lsr.read().rdr().is_valid() {
-        handle_usart_data();
-    }
-
-    if peripherals.USART.ier().read().threinten().bit_is_set() {
-        while peripherals.USART.lsr.read().thre().bit_is_set() {
-            if let Some(val) = unsafe { USART_RING_BUFFER.dequeue() } {
-                peripherals.USART.thr_mut().write(|v| unsafe { v.thr().bits(val) });
-            } else {
-                break;
-            }
-        }
-        if unsafe { USART_RING_BUFFER.is_empty() } {
-            peripherals.USART.ier_mut().modify(|_, v| v.threinten().clear_bit());
-        }
-    }
+    crate::nrf_comms::handle_interrupt()
 }

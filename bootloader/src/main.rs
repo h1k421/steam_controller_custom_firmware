@@ -10,6 +10,7 @@ mod rt;
 mod led;
 mod programming_mode;
 mod usb_debug_uart;
+mod nrf_comms;
 
 use core::slice;
 use core::mem::size_of;
