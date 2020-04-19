@@ -1,6 +1,6 @@
-#![feature(const_loop)]
-#![feature(const_if_match)]
-#![feature(const_int_conversion)]
+//#![feature(const_loop)]
+//#![feature(const_if_match)]
+//#![feature(const_int_conversion)]
 
 use bitflags::bitflags;
 use bitfield::bitfield;

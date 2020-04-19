@@ -4,7 +4,6 @@ use lpc11uxx_rom::usbd::{HidInitParameter, InitParameter, CoreDescriptors,
 use lpc11uxx::*;
 use crate::lpc11uxx_misc::*;
 use cortex_m::peripheral::NVIC;
-use static_assertions::const_assert_eq;
 use core::convert::TryInto;
 
 use crate::MAIN_CLOCK_FREQ;
@@ -118,7 +117,7 @@ const CONFIGURATION_DESCRIPTOR_CONST: [u8; 101] = combine_descriptors![
         descriptor_length: 33
     },
     EndpointDescriptor {
-        endpoint_addr: 0x81,
+        endpoint_addr: HID_ENDPOINT,
         attributes: 0x03,
         max_packet_size: 64,
         interval: 6
@@ -302,7 +301,7 @@ fn write_data_to_program2_flash(data: &[u8]) -> i32 {
             if err != 0 {
                 return 1;
             }
-            let err = iap::copy_ram_to_flash(flash_dst as u32, FLASH_BUFFER.as_ptr() as usize, FLASH_BUFFER.len(), unsafe { MAIN_CLOCK_FREQ } / 1024);
+            let err = iap::copy_ram_to_flash(flash_dst as u32, FLASH_BUFFER.as_ptr() as usize, FLASH_BUFFER.len(), MAIN_CLOCK_FREQ / 1024);
             if err != 0 {
                 return 1;
             }
@@ -357,7 +356,7 @@ fn end_flash_verify_firmware_sig(sig: &[u8]) -> u32 {
             if err != 0 {
                 return 2;
             }
-            let err = iap::copy_ram_to_flash(flash_dst as u32, FLASH_BUFFER.as_ptr() as usize, FLASH_BUFFER.len(), unsafe { MAIN_CLOCK_FREQ } / 1024);
+            let err = iap::copy_ram_to_flash(flash_dst as u32, FLASH_BUFFER.as_ptr() as usize, FLASH_BUFFER.len(), MAIN_CLOCK_FREQ / 1024);
             if err != 0 {
                 return 3;
             }
@@ -455,7 +454,7 @@ pub fn hid_handle_set_feature_report(wwdt: &WWDT, syscon: &SYSCON, buffer: &[u8]
             // Spams a bit too much :D
             //crate::usb_debug_uart::usb_putb(b"FLASH_FIRMWARE\n");
 
-            let err = write_data_to_program2_flash(&buffer[2..2 + usize::from(buffer[1])]);
+            let _err = write_data_to_program2_flash(&buffer[2..2 + usize::from(buffer[1])]);
             let err = 0;
             write_report_0x94(err as u16);
             led_advance_blink();
@@ -646,6 +645,7 @@ fn init_usb() -> i32 {
     return 0;
 }
 
+#[allow(non_snake_case)]
 fn send_usart_R_if_usb_disconnected(gpio_port: &mut GPIO_PORT) {
     let usb_disconnected = super::is_usb_disconnected(gpio_port);
     if !usb_disconnected {
@@ -839,6 +839,7 @@ pub fn enter_programming_mode(mut core_peripherals: CorePeripherals, mut periphe
 }
 
 
+#[allow(non_snake_case)]
 pub fn CT32B1() {
     let peripherals = unsafe { Peripherals::steal() };
     peripherals.CT32B1.ir.write(|v| v.mr0int().set_bit());
@@ -848,6 +849,7 @@ pub fn CT32B1() {
     }
 }
 
+#[allow(non_snake_case)]
 pub fn USB_IRQ() {
     let peripherals = unsafe { Peripherals::steal() };
 
@@ -870,12 +872,14 @@ pub fn USB_IRQ() {
     (usb_api.hw().isr)(unsafe { USBD_HANDLE });
 }
 
+#[allow(non_snake_case)]
 pub fn PendSV() {
     SCB::clear_pendsv();
     let peripherals = unsafe { Peripherals::steal() };
     crate::nrf_comms::handle_pendsv(&peripherals.WWDT, &peripherals.SYSCON);
 }
 
+#[allow(non_snake_case)]
 pub fn USART() {
     let mut peripherals = unsafe { Peripherals::steal() };
     crate::nrf_comms::handle_interrupt(&mut peripherals.USART)

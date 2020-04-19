@@ -16,8 +16,8 @@ struct UcomData<'a> {
     /// Buffer treated as a FIFO which stores character data that has been
     /// receive via USB CDC UART
     rx_fifo: &'a mut [u8],
-    rx_rd_idx: usize,
-    rx_wr_idx: usize,
+    //rx_rd_idx: usize,
+    //rx_wr_idx: usize,
 
     /// Flag that we did not have enough room for incoming data in rxFifo and
     /// did not call ReadEP. We will need to call ReadEP to get the buffered
@@ -25,7 +25,7 @@ struct UcomData<'a> {
     /// tx_fifo. Note that even though we do not call ReadEP, incoming USB
     /// packets may be dropped and into data lost. Still looking for solutions
     /// to fix this.
-    rx_stalled: bool,
+    //rx_stalled: bool,
     /// Indicates transmission is in progress. This does not guarantee that
     /// tx_fifo will be drained (use usb_flush() for this).
     tx_busy: VolatileCell<bool>,
@@ -44,9 +44,9 @@ static mut UCOM_DATA: UcomData<'static> = UcomData {
     usb: UsbHandle::null(),
     cdc: CdcHandle::null(),
     rx_fifo: &mut [],
-    rx_rd_idx: 0,
-    rx_wr_idx: 0,
-    rx_stalled: false,
+    //rx_rd_idx: 0,
+    //rx_wr_idx: 0,
+    //rx_stalled: false,
     tx_busy: VolatileCell::new(false),
     tx_fifo: &mut [],
     tx_rd_idx: VolatileCell::new(0),
@@ -57,7 +57,7 @@ static mut UCOM_DATA: UcomData<'static> = UcomData {
     ep_out_idx: 0,
 };
 
-extern fn set_line_code(hnd: CdcHandle, line_coding: &mut CdcLineCoding) -> i32 {
+extern fn set_line_code(_hnd: CdcHandle, _line_coding: &mut CdcLineCoding) -> i32 {
     unsafe { UCOM_DATA.connected.set(true); }
     0
 }
@@ -182,9 +182,7 @@ fn usb_uart_rcv_data(ucom: &mut UcomData) {
     }
 }
 
-extern fn ucom_bulk_hdlr(usb: UsbHandle, data: *mut u8, evt: u32) -> i32 {
-    let usb_api = RomDriver::get().usb_api();
-
+extern fn ucom_bulk_hdlr(_usb: UsbHandle, data: *mut u8, evt: u32) -> i32 {
     let ucom = unsafe { (data as *mut UcomData).as_mut().unwrap() };
     match evt {
         // USB_EVT_IN
@@ -215,7 +213,7 @@ extern fn ucom_bulk_hdlr(usb: UsbHandle, data: *mut u8, evt: u32) -> i32 {
 
 pub fn usb_putc(chara: u8) -> i32 {
     unsafe {
-        let mut next_wr_idx = (UCOM_DATA.tx_wr_idx + 1) % UCOM_DATA.tx_fifo.len();
+        let next_wr_idx = (UCOM_DATA.tx_wr_idx + 1) % UCOM_DATA.tx_fifo.len();
 
         // We're full already. Fuck.
         if next_wr_idx == UCOM_DATA.tx_rd_idx.get() {
@@ -246,11 +244,13 @@ pub fn usb_putb(data: &[u8]) {
     }
 }
 
-pub fn usb_putnbr(mut n: u32) {
+#[allow(unused)]
+pub fn usb_putnbr(n: u32) {
     usb_putnbr_base(n, b"0123456789");
 }
 
-pub fn usb_putnbr_hex(mut n: u32) {
+#[allow(unused)]
+pub fn usb_putnbr_hex(n: u32) {
     usb_putnbr_base(n, b"0123456789abcdef");
 }
 
@@ -284,6 +284,7 @@ pub fn usb_flush() {
     }
 }*/
 
+#[allow(unused)]
 pub fn enabled() -> bool {
     return unsafe { UCOM_DATA.connected.get() }
 }

@@ -176,7 +176,7 @@ fn handle_usart_data(usart: &mut USART) {
 }
 
 
-fn RingBuffer_InsertMult(ring_buffer: &mut Queue<u8, heapless::consts::U256>, data: &[u8]) -> usize {
+fn ring_buffer_insert_mult(ring_buffer: &mut Queue<u8, heapless::consts::U256>, data: &[u8]) -> usize {
     let old_len = ring_buffer.len();
     // TODO: Please tell me this turns into a simple memcpy...
     for item in data {
@@ -195,7 +195,7 @@ fn usart_send_raw_str(data: &[u8]) -> usize {
     peripherals.USART.ier_mut().modify(|_, v| v.threinten().disable_the_thre_int());
 
     // Insert data to the ring buffer
-    let mut inserted_len = RingBuffer_InsertMult(unsafe { &mut USART_WRITE_RING_BUFFER }, data);
+    let mut inserted_len = ring_buffer_insert_mult(unsafe { &mut USART_WRITE_RING_BUFFER }, data);
 
     // Send the contents of the ring buffer
     while peripherals.USART.lsr.read().thre().is_empty() {
@@ -207,7 +207,7 @@ fn usart_send_raw_str(data: &[u8]) -> usize {
     }
 
     // Try to insert some more contents in the ring buffer.
-    inserted_len += RingBuffer_InsertMult(unsafe { &mut USART_WRITE_RING_BUFFER }, &data[inserted_len..]);
+    inserted_len += ring_buffer_insert_mult(unsafe { &mut USART_WRITE_RING_BUFFER }, &data[inserted_len..]);
 
     // Re-enable send interrupts
     peripherals.USART.ier_mut().modify(|_, v| v.threinten().enable_the_thre_inte());
@@ -247,6 +247,7 @@ pub fn usart_send_text_transmission(data: &[u8]) {
     })
 }
 
+#[allow(non_snake_case)]
 pub fn usart_send_R() {
     usart_send_text_transmission(b"R");
 }
@@ -275,6 +276,7 @@ pub fn usart_send_reset() {
     usart_send_text_transmission(b"\\RESET");
 }
 
+#[allow(non_snake_case)]
 pub fn usart_send_V_packet(data: &[u8]) {
     if unsafe { SHOULD_SEND_USART_PACKET } {
         cortex_m::interrupt::free(|_v| {

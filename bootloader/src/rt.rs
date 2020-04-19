@@ -35,6 +35,7 @@ pub fn led_panic(start_intensity: u16, delay_ms: u32) -> ! {
     }
 }
 
+#[allow(unused)]
 pub fn led_blink_n_times(start_intensity: u16, n: u32) {
     led::initialize();
 
@@ -46,7 +47,7 @@ pub fn led_blink_n_times(start_intensity: u16, n: u32) {
     );
 
     let mut intensity = start_intensity;
-    for i in 0..n * 2 {
+    for _i in 0..n * 2 {
         led::set_intensity(intensity);
 
         if intensity == 0 {

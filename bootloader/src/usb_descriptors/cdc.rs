@@ -1,5 +1,5 @@
 const CS_INTERFACE: u8 = 0x24;
-const CS_ENDPOINT: u8 = 0x25;
+//const CS_ENDPOINT: u8 = 0x25;
 
 const CS_HEADER: u8 = 0x00;
 const CS_CALL_MANAGEMENT: u8 = 0x01;
