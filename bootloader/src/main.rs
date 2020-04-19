@@ -17,12 +17,17 @@ use core::mem::size_of;
 
 use cortex_m_rt::{entry, exception};
 use lpc11uxx_rom::iap;
-use lpc11uxx::{interrupt, Peripherals};
+use lpc11uxx::*;
 
+// TODO: Once_cell for the cortex-m.
+// BODY: Conquer-cell maybe? But that appears to spinlock... I need to check but
+// BODY: I'm *fairly* sure that ARM guarantees interrupts only happen on insn
+// BODY: boundary. This means that in theory, I should be able to use volatile
+// BODY: reads to this variable to maintain the necessary invariants.
 static mut MAIN_CLOCK_FREQ: u32 = 0;
 
-fn initialize_main_clock_freq() {
-    unsafe { MAIN_CLOCK_FREQ = lpc11uxx_misc::get_main_clock_rate(); }
+fn initialize_main_clock_freq(syscon: &SYSCON) {
+    unsafe { MAIN_CLOCK_FREQ = lpc11uxx_misc::get_main_clock_rate(syscon); }
 }
 
 #[repr(C)]
@@ -60,31 +65,27 @@ fn write_eeprom_cache() {
     iap::eeprom_write(0, eeprom_magic_ptr, unsafe { MAIN_CLOCK_FREQ } / 1024);
 }
 
-fn is_usb_disconnected() -> bool {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    peripherals.GPIO_PORT.b0[3].read().pbyte().bit()
+fn is_usb_disconnected(gpio_port: &mut GPIO_PORT) -> bool {
+    gpio_port.b0[3].read().pbyte().bit()
 }
 
-fn set_battery_power(state: bool) {
+fn set_battery_power(gpio_port: &mut GPIO_PORT, state: bool) {
     // The original has an absolutely hilarious bug: they first write to the
     // GPIO port, and then set the direction bit. Over-eager optimizations?
     //
     // Seems to work anyways - I suppose those pins default to being output
     // pins. But let's do it in the correct order here.
 
-    let peripherals = unsafe { Peripherals::steal() };
-
     unsafe {
         if EEPROM_CACHE.version < 5 {
-            peripherals.GPIO_PORT.b140.write(|v| v.pbyte().bit(state));
-            peripherals.GPIO_PORT.dir[1].modify(|_, w| w.dirp8().set_bit());
+            gpio_port.dir[1].modify(|_, w| w.dirp8().set_bit());
+            gpio_port.b140.write(|v| v.pbyte().bit(state));
         } else if EEPROM_CACHE.version < 8 {
-            peripherals.GPIO_PORT.b132.write(|v| v.pbyte().bit(state));
-            peripherals.GPIO_PORT.dir[1].modify(|_, w| w.dirp0().set_bit());
+            gpio_port.dir[1].modify(|_, w| w.dirp0().set_bit());
+            gpio_port.b132.write(|v| v.pbyte().bit(state));
         } else {
-            peripherals.GPIO_PORT.b142.write(|v| v.pbyte().bit(!state));
-            peripherals.GPIO_PORT.dir[1].modify(|_, w| w.dirp10().set_bit());
+            gpio_port.dir[1].modify(|_, w| w.dirp10().set_bit());
+            gpio_port.b142.write(|v| v.pbyte().bit(!state));
         };
     }
 }
@@ -93,10 +94,8 @@ fn set_battery_power(state: bool) {
 /// resets.
 ///
 /// This register persists through wakes and resets.
-fn enter_programming_mode_on_reboot(enable: bool) {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    peripherals.PMU.gpreg[1].write(|v| unsafe { v.gpdata().bits(!enable as u32) });
+fn enter_programming_mode_on_reboot(pmu: &mut PMU, enable: bool) {
+    pmu.gpreg[1].write(|v| unsafe { v.gpdata().bits(!enable as u32) });
 }
 
 /// Someone is going to need to explain this function to me. I can't figure
@@ -128,13 +127,11 @@ fn weird_flash_function(mut ram_page: u32) {
     }
 }
 
-fn setup_pinmux() {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    peripherals.IOCON.pio0_3.write(|v| v.func().pio0_3().mode().pull_down());
-    peripherals.IOCON.pio0_6.write(|v| v.func().usb_connect().mode().floating());
-    peripherals.IOCON.pio1_17.write(|v| v.func().rxd().mode().floating());
-    peripherals.IOCON.pio1_18.write(|v| v.func().txd().mode().floating());
+fn setup_pinmux(iocon: &mut IOCON) {
+    iocon.pio0_3.write(|v| v.func().pio0_3().mode().pull_down());
+    iocon.pio0_6.write(|v| v.func().usb_connect().mode().floating());
+    iocon.pio1_17.write(|v| v.func().rxd().mode().floating());
+    iocon.pio1_18.write(|v| v.func().txd().mode().floating());
 }
 
 fn watchdog_init(syscon: &lpc11uxx::SYSCON, watchdog: &lpc11uxx::WWDT) {
@@ -163,20 +160,18 @@ fn watchdog_feed(watchdog: &lpc11uxx::WWDT) {
     watchdog.feed.write(|v| unsafe { v.feed().bits(0x55) });
 }
 
-fn setup_watchdog(timeout: u32) {
-    let peripherals = unsafe { Peripherals::steal() };
-
+fn setup_watchdog(syscon: &SYSCON, watchdog: &WWDT, timeout: u32) {
     // Re-initialize the watchdog to the default values.
-    watchdog_init(&peripherals.SYSCON, &peripherals.WWDT);
+    watchdog_init(syscon, watchdog);
 
     // Set the timeout
-    peripherals.WWDT.tc.write(|v| unsafe { v.count().bits(timeout) });
+    watchdog.tc.write(|v| unsafe { v.count().bits(timeout) });
 
     // Enable watchdog and make it reset on timeout
-    peripherals.WWDT.mod_.modify(|_, v| v.wden().running().wdreset().reset());
+    watchdog.mod_.modify(|_, v| v.wden().running().wdreset().reset());
 
     // Do the first feed to start the watchdog.
-    watchdog_feed(&peripherals.WWDT);
+    watchdog_feed(watchdog);
 }
 
 fn start_program2() -> ! {
@@ -207,13 +202,14 @@ fn start_program2() -> ! {
 
 #[entry]
 fn main() -> ! {
-    // Initialize system. Normally done in pre-main.
-    system::initialize();
+    let mut peripherals = Peripherals::take().unwrap();
+    let core_peripherals = CorePeripherals::take().unwrap();
 
-    let peripherals = unsafe { Peripherals::steal() };
+    // Clock setup, and flashctrl init.
+    system::initialize(&mut peripherals.SYSCON, &mut peripherals.FLASHCTRL);
 
     // Initialize the MAIN_CLOCK_FREQ
-    initialize_main_clock_freq();
+    initialize_main_clock_freq(&peripherals.SYSCON);
 
     // Check that the EEPROM Magic is correct, set it to the right value otherwise.
     check_eeprom_magic();
@@ -224,19 +220,19 @@ fn main() -> ! {
         .sysahbclkctrl
         .modify(|_, writer| writer.gpio().enabled());
 
-    let usb_disconnected = is_usb_disconnected();
+    let usb_disconnected = is_usb_disconnected(&mut peripherals.GPIO_PORT);
 
     // If a brown-out is detected, we should kill the battery and die.
     if !usb_disconnected && peripherals.SYSCON.sysrststat.read().bod().bit_is_set() {
         peripherals.SYSCON.sysrststat.write_with_zero(|f| f.bod().reset_clear());
-        set_battery_power(false);
+        set_battery_power(&mut peripherals.GPIO_PORT, false);
         loop {
             cortex_m::asm::wfi();
         }
     }
 
-    set_battery_power(true);
-    enter_programming_mode_on_reboot(true);
+    set_battery_power(&mut peripherals.GPIO_PORT, true);
+    enter_programming_mode_on_reboot(&mut peripherals.PMU, true);
 
     // The real firmware uses a table like the following and calls
     // Chip_IOCON_PinMuxSet in a loop to setup the pinmuxing. Unfortunately, the
@@ -253,10 +249,10 @@ fn main() -> ! {
     //    pinmux_set(pinmux_info.port, pinmux_info.pin, pinmux_info.mode);
     // }
 
-    setup_pinmux();
+    setup_pinmux(&mut peripherals.IOCON);
 
-    let usb_disconnected = is_usb_disconnected();
-    set_battery_power(!usb_disconnected);
+    let usb_disconnected = is_usb_disconnected(&mut peripherals.GPIO_PORT);
+    set_battery_power(&mut peripherals.GPIO_PORT, !usb_disconnected);
 
     let mut should_copy_ram_to_flash = [0; 4];
     iap::eeprom_read(0x500, &mut should_copy_ram_to_flash, unsafe { MAIN_CLOCK_FREQ } / 1024);
@@ -264,13 +260,13 @@ fn main() -> ! {
     if should_copy_ram_to_flash != 0 {
         iap::eeprom_write(0x500, &0u32.to_le_bytes(), unsafe { MAIN_CLOCK_FREQ } / 1024);
         weird_flash_function(should_copy_ram_to_flash);
-        setup_watchdog(100);
+        setup_watchdog(&peripherals.SYSCON, &peripherals.WWDT, 100);
     }
 
     if peripherals.PMU.gpreg[0].read().bits() == 0xecaabac0 {
         peripherals.PMU.gpreg[0].write(|v| unsafe { v.gpdata().bits(0) });
     } else if unsafe { *(0x2024 as *const u32) == 0xecaabac0 && EEPROM_CACHE.version != 0 } {
-        enter_programming_mode_on_reboot(false);
+        enter_programming_mode_on_reboot(&mut peripherals.PMU, false);
 
         // Enable RAM1 clock before jumping to program2.
         peripherals
@@ -281,7 +277,7 @@ fn main() -> ! {
         start_program2();
     }
 
-    programming_mode::enter_programming_mode();
+    programming_mode::enter_programming_mode(core_peripherals, peripherals);
 }
 
 #[exception]
@@ -307,6 +303,7 @@ fn SVCall() {
 
 #[exception]
 fn PendSV() {
+    // TODO
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
@@ -415,6 +412,7 @@ fn CT32B0() {
 
 #[interrupt]
 fn CT32B1() {
+    // TODO
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
@@ -433,6 +431,7 @@ fn SSP0() {
 
 #[interrupt]
 fn USART() {
+    // TODO
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {
@@ -445,6 +444,7 @@ fn USART() {
 
 #[interrupt]
 fn USB_IRQ() {
+    // TODO
     let peripherals = unsafe { Peripherals::steal() };
 
     if peripherals.PMU.gpreg[1].read().bits() == 0 {

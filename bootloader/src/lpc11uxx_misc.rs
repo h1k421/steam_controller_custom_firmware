@@ -1,4 +1,4 @@
-use lpc11uxx::Peripherals;
+use lpc11uxx::SYSCON;
 
 static WDT_OSC_RATE: [u32; 16] = [
            0x00000000,
@@ -20,10 +20,9 @@ static WDT_OSC_RATE: [u32; 16] = [
 ];
 
 
-pub fn get_main_clock_rate() -> u32 {
+pub fn get_main_clock_rate(syscon: &SYSCON) -> u32 {
     use lpc11uxx::syscon::mainclksel::SEL_A::*;
-    let peripherals = unsafe { Peripherals::steal() };
-    match peripherals.SYSCON.mainclksel.read().sel().variant() {
+    match syscon.mainclksel.read().sel().variant() {
         IRC_OSCILLATOR => {
             12_000_000
         },
@@ -31,22 +30,20 @@ pub fn get_main_clock_rate() -> u32 {
             12_000_000
         },
         WATCHDOG_OSCILLATOR => {
-            let wdtoscctrl = peripherals.SYSCON.wdtoscctrl.read();
+            let wdtoscctrl = syscon.wdtoscctrl.read();
             WDT_OSC_RATE[wdtoscctrl.freqsel().bits() as usize] / (u32::from(wdtoscctrl.divsel().bits()) * 2 + 2)
         },
         PLL_OUTPUT => {
-            let pll_reg = peripherals.SYSCON.syspllctrl.read().msel().bits();
+            let pll_reg = syscon.syspllctrl.read().msel().bits();
             let input_rate = 12_000_000;
             (u32::from(pll_reg) + 1) * input_rate
         }
     }
 }
 
-pub fn get_system_clock_rate() -> u32 {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    let clock_rate = get_main_clock_rate();
-    let ticks_per_sec = peripherals.SYSCON.sysahbclkdiv.read().div().bits();
+pub fn get_system_clock_rate(syscon: &SYSCON) -> u32 {
+    let clock_rate = get_main_clock_rate(syscon);
+    let ticks_per_sec = syscon.sysahbclkdiv.read().div().bits();
 
     clock_rate / u32::from(ticks_per_sec)
 }

@@ -1,7 +1,7 @@
 use lpc11uxx_rom::{RomDriver, iap};
 use lpc11uxx_rom::usbd::{HidInitParameter, InitParameter, CoreDescriptors,
     SetupPacket, HidReport, DeviceDescriptor, UsbHandle, HidHandle};
-use lpc11uxx::{Peripherals, CorePeripherals, Interrupt, SCB};
+use lpc11uxx::*;
 use crate::lpc11uxx_misc::*;
 use cortex_m::peripheral::NVIC;
 use static_assertions::const_assert_eq;
@@ -409,7 +409,7 @@ pub fn write_report_0x94(err_code: u16) -> usize {
     }
 }
 
-pub fn hid_handle_set_feature_report(buffer: &[u8]) -> usize {
+pub fn hid_handle_set_feature_report(wwdt: &WWDT, syscon: &SYSCON, buffer: &[u8]) -> usize {
     match buffer[0] {
         // GET_HWINFO
         0x83 => {
@@ -483,7 +483,7 @@ pub fn hid_handle_set_feature_report(buffer: &[u8]) -> usize {
             crate::usb_debug_uart::usb_putb(b"RESET_WHOLE_SOC\n");
             if buffer[1] == 0 {
                 crate::nrf_comms::usart_send_reset();
-                super::setup_watchdog(10_000);
+                super::setup_watchdog(syscon, wwdt, 10_000);
             }
             return 0;
         },
@@ -527,7 +527,8 @@ extern fn hid_set_report_handler(_handle: HidHandle, setup_packet: *const SetupP
                 let buffer = unsafe {
                     core::slice::from_raw_parts(*buffer, length as usize)
                 };
-                hid_handle_set_feature_report(buffer);
+                let peripherals = unsafe { Peripherals::steal() };
+                hid_handle_set_feature_report(&peripherals.WWDT, &peripherals.SYSCON, buffer);
             },
             _ => ()
         }
@@ -633,10 +634,9 @@ fn init_usb() -> i32 {
 
     // Enable USB_IRQ and set priority to 1.
     unsafe {
+        // TODO: I don't think we use mask-based critical section, but it'd be nice to make sure of it.
         core_peripherals.NVIC.set_priority(Interrupt::USB_IRQ, 0);
-    }
-    core_peripherals.NVIC.enable(Interrupt::USB_IRQ);
-    unsafe {
+        NVIC::unmask(Interrupt::USB_IRQ);
         core_peripherals.NVIC.set_priority(Interrupt::USB_IRQ, 1);
     }
 
@@ -646,8 +646,8 @@ fn init_usb() -> i32 {
     return 0;
 }
 
-fn send_usart_R_if_usb_disconnected() {
-    let usb_disconnected = super::is_usb_disconnected();
+fn send_usart_R_if_usb_disconnected(gpio_port: &mut GPIO_PORT) {
+    let usb_disconnected = super::is_usb_disconnected(gpio_port);
     if !usb_disconnected {
         for _i in 0..50_000 {
             // Do nothing.
@@ -724,24 +724,23 @@ fn tick_led_blink(tick: u8) {
     };
 }
 
-fn init_timer_32_1() {
+fn init_timer_32_1(syscon: &SYSCON, ct32b1: &mut CT32B1) {
     // TODO: Understand exactly how the timer is configured
-    let peripherals = unsafe { Peripherals::steal() };
 
     // Enable the ct32b1 clock
-    peripherals.SYSCON.sysahbclkctrl.modify(|_, v| v.ct32b1().enabled());
+    syscon.sysahbclkctrl.modify(|_, v| v.ct32b1().enabled());
 
     // Setup CT32B1 clock rate
-    let clk_rate = get_system_clock_rate();
+    let clk_rate = get_system_clock_rate(syscon);
     let clk_rate2 = clk_rate / 1000;
-    peripherals.CT32B1.pr.write(|v| unsafe { v.pcval().bits(clk_rate2 - 1) });
+    ct32b1.pr.write(|v| unsafe { v.pcval().bits(clk_rate2 - 1) });
 
     // Reset the TC and trigger an interrupt when MR0 matches.
-    peripherals.CT32B1.mcr.modify(|_, v| v.mr0r().enabled());
-    peripherals.CT32B1.mcr.modify(|_, v| v.mr0i().enabled());
+    ct32b1.mcr.modify(|_, v| v.mr0r().enabled());
+    ct32b1.mcr.modify(|_, v| v.mr0i().enabled());
 
     // Make MR0 match when TC reaches the value "11"
-    peripherals.CT32B1.mr[0].write(|v| unsafe { v.match_().bits(11) });
+    ct32b1.mr[0].write(|v| unsafe { v.match_().bits(11) });
 
     NVIC::unpend(Interrupt::CT32B1);
     unsafe { NVIC::unmask(Interrupt::CT32B1) };
@@ -760,7 +759,7 @@ fn init_timer_32_1() {
         USART_PACKET[12..16].copy_from_slice(&0u32.to_le_bytes());
     }
 
-    peripherals.CT32B1.tcr.modify(|_, v| v.cen().the_timer_counter_an());
+    ct32b1.tcr.modify(|_, v| v.cen().the_timer_counter_an());
 
     unsafe { TIMER_ENABLED = true; }
 }
@@ -815,18 +814,18 @@ fn send_usart_packet_if_timer_elapsed() {
             let counter = u32::from_le_bytes(counter) + 1;
             USART_PACKET[4..8].copy_from_slice(&counter.to_le_bytes());
 
-            crate::nrf_comms::usart_send_V_packet_maybe(&USART_PACKET);
+            crate::nrf_comms::usart_send_V_packet(&USART_PACKET);
         }
     }
 }
 
-pub fn enter_programming_mode() -> ! {
+pub fn enter_programming_mode(mut core_peripherals: CorePeripherals, mut peripherals: Peripherals) -> ! {
     init_usb();
-    crate::nrf_comms::init_usart();
-    send_usart_R_if_usb_disconnected();
+    crate::nrf_comms::init_usart(&peripherals.SYSCON, &peripherals.USART, &mut core_peripherals.NVIC, &mut core_peripherals.SCB);
+    send_usart_R_if_usb_disconnected(&mut peripherals.GPIO_PORT);
     init_led_ctrl();
     tick_led_blink(0xff);
-    init_timer_32_1();
+    init_timer_32_1(&peripherals.SYSCON, &mut peripherals.CT32B1);
     loop {
         if unsafe { SHOULD_REINVOKE_ISP } {
             reinvoke_isp();
@@ -873,9 +872,11 @@ pub fn USB_IRQ() {
 
 pub fn PendSV() {
     SCB::clear_pendsv();
-    crate::nrf_comms::handle_pendsv();
+    let peripherals = unsafe { Peripherals::steal() };
+    crate::nrf_comms::handle_pendsv(&peripherals.WWDT, &peripherals.SYSCON);
 }
 
 pub fn USART() {
-    crate::nrf_comms::handle_interrupt()
+    let mut peripherals = unsafe { Peripherals::steal() };
+    crate::nrf_comms::handle_interrupt(&mut peripherals.USART)
 }

@@ -1,5 +1,5 @@
 use heapless::spsc::Queue;
-use lpc11uxx::{Peripherals, CorePeripherals, Interrupt, SCB};
+use lpc11uxx::{Peripherals, Interrupt, SCB, USART, SYSCON, WWDT};
 use cortex_m::peripheral::NVIC;
 use cortex_m::peripheral::scb::SystemHandler;
 
@@ -20,10 +20,7 @@ enum UsartReadState {
     PacketSubmitted,
 }
 
-pub fn init_usart() {
-    let mut core_peripherals = unsafe { CorePeripherals::steal() };
-    let peripherals = unsafe { Peripherals::steal() };
-
+pub fn init_usart(syscon: &SYSCON, usart: &USART, nvic: &mut NVIC, scb: &mut SCB) {
     unsafe {
         USART_READ_STATE = UsartReadState::NoData;
     }
@@ -31,53 +28,51 @@ pub fn init_usart() {
     // RingBuffer_Init is unnecessary - we're using ArrayDeque
 
     // Chip_UART_Init
-    peripherals.SYSCON.sysahbclkctrl.modify(|_, writer| writer.usart().enabled());
-    peripherals.SYSCON.uartclkdiv.write(|v| unsafe { v.div().bits(1) });
-    peripherals.USART.fcr_mut().write(|v| v
+    syscon.sysahbclkctrl.modify(|_, writer| writer.usart().enabled());
+    syscon.uartclkdiv.write(|v| unsafe { v.div().bits(1) });
+    usart.fcr_mut().write(|v| v
         .fifoen().enabled()
         .rxfifores().clear()
         .txfifores().clear());
-    peripherals.USART.lcr.write(|v| v
+    usart.lcr.write(|v| v
         .wls()._8_bit_character_leng()
         .sbs()._1_stop_bit());
-    peripherals.USART.fdr.write(|v| unsafe { v.mulval().bits(1) });
+    usart.fdr.write(|v| unsafe { v.mulval().bits(1) });
 
     // ChipUART_SetupFifos
-    peripherals.USART.fcr_mut().write(|v| v
+    usart.fcr_mut().write(|v| v
         .fifoen().enabled()
         .rxtl().level2());
 
     // Enable access to the divisor registers.
-    peripherals.USART.lcr.modify(|_, v| v.dlab().enable_access_to_div());
+    usart.lcr.modify(|_, v| v.dlab().enable_access_to_div());
 
     // Set the USART divisor latch to 3
-    peripherals.USART.dll().write(|v| unsafe { v.dllsb().bits(3) });
+    usart.dll().write(|v| unsafe { v.dllsb().bits(3) });
 
-    peripherals.USART.fdr.write(|v| unsafe {
+    usart.fdr.write(|v| unsafe {
         v
             .divaddval().bits(1)
             .mulval().bits(11)
     });
 
     // Disable access to the divisor registers, restore access to USART read/write registers.
-    peripherals.USART.lcr.modify(|_, v| v.dlab().disable_access_to_di());
+    usart.lcr.modify(|_, v| v.dlab().disable_access_to_di());
 
     unsafe { NVIC::unmask(Interrupt::USART) };
-    peripherals.USART.ier_mut().modify(|_, v| v
+    usart.ier_mut().modify(|_, v| v
         .rbrinten().enable_the_rda_inter()
         .rlsinten().enable_the_rls_inter());
 
     // TODO: Make sure those priority numbers are correct. NVIC_SetPriority does
     // fancy bit shifting I don't fully understand at 3AM.
-    unsafe { core_peripherals.NVIC.set_priority(Interrupt::USART, 0) };
-    unsafe { core_peripherals.SCB.set_priority(SystemHandler::PendSV, 1) };
+    unsafe { nvic.set_priority(Interrupt::USART, 0) };
+    unsafe { scb.set_priority(SystemHandler::PendSV, 1) };
 }
 
-pub fn handle_interrupt() {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    if peripherals.USART.iir().read().intid().is_receive_line_status() {
-        let lsr = peripherals.USART.lsr.read();
+pub fn handle_interrupt(mut usart: &mut USART) {
+    if usart.iir().read().intid().is_receive_line_status() {
+        let lsr = usart.lsr.read();
         let oe = lsr.oe().is_active();
         let pe = lsr.pe().is_active();
         let fe = lsr.fe().is_active();
@@ -85,37 +80,37 @@ pub fn handle_interrupt() {
         let rxfe = lsr.rxfe().is_erro();
 
         if oe || pe || fe || bi || rxfe {
-            peripherals.USART.rbr().read();
+            usart.rbr().read();
         }
 
         if lsr.rdr().is_valid() {
-            peripherals.USART.rbr().read();
+            usart.rbr().read();
         }
     }
 
 
-    while peripherals.USART.lsr.read().rdr().is_valid() {
-        handle_usart_data();
+    while usart.lsr.read().rdr().is_valid() {
+        handle_usart_data(&mut usart);
     }
 
-    if peripherals.USART.ier().read().threinten().bit_is_set() {
-        while peripherals.USART.lsr.read().thre().bit_is_set() {
+    if usart.ier().read().threinten().bit_is_set() {
+        while usart.lsr.read().thre().bit_is_set() {
             if let Some(val) = unsafe { USART_WRITE_RING_BUFFER.dequeue() } {
-                peripherals.USART.thr_mut().write(|v| unsafe { v.thr().bits(val) });
+                usart.thr_mut().write(|v| unsafe { v.thr().bits(val) });
             } else {
                 break;
             }
         }
         if unsafe { USART_WRITE_RING_BUFFER.is_empty() } {
-            peripherals.USART.ier_mut().modify(|_, v| v.threinten().clear_bit());
+            usart.ier_mut().modify(|_, v| v.threinten().clear_bit());
         }
     }
 }
 
-pub fn handle_pendsv() {
+pub fn handle_pendsv(wwdt: &WWDT, syscon: &SYSCON) {
     match unsafe { USART_READ_PENDSV_PACKET[0] } {
         b'P' => unsafe {
-            let size = crate::programming_mode::hid_handle_set_feature_report(&USART_READ_PENDSV_PACKET[1..USART_READ_PENDSV_PACKET_LEN as usize]);
+            let size = crate::programming_mode::hid_handle_set_feature_report(wwdt, syscon, &USART_READ_PENDSV_PACKET[1..USART_READ_PENDSV_PACKET_LEN as usize]);
             if size != 0 {
                 usart_send_hid_report(size);
             }
@@ -175,9 +170,8 @@ pub fn handle_usart_byte(data: u8) {
     }
 }
 
-fn handle_usart_data() {
-    let peripherals = unsafe { Peripherals::steal() };
-    let data = peripherals.USART.rbr().read().rbr().bits();
+fn handle_usart_data(usart: &mut USART) {
+    let data = usart.rbr().read().rbr().bits();
     handle_usart_byte(data);
 }
 

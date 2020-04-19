@@ -1,6 +1,7 @@
 use lpc11uxx::Peripherals;
 
 pub fn initialize() {
+    // TODO: Move lED initialization to start of program.
     let peripherals = unsafe { Peripherals::steal() };
 
     // Enable LED clock (CT16B1)
@@ -64,6 +65,7 @@ pub fn initialize() {
 }
 
 pub fn set_intensity(intensity: u16) {
+    // TODO: Move lED initialization to start of program.
     let peripherals = unsafe { Peripherals::steal() };
 
     unsafe {
