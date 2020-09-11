@@ -11,7 +11,7 @@ cortex-m = "0.6.0"
 cortex-m-rt = "0.6.10"
 embedded-hal = "0.2.3"
 lpc11uxx = {version = "0.3.0", features = ["rt"]}
-lpc11uxx-hal = { git = "https://github.com/lpc-rs/lpc11uxx-hal.git" }
+lpc11uxx-hal = { git = "https://github.com/roblabla/lpc11uxx-hal.git", branch = "poc" }
 static_assertions = "1.1.0"
 lpc11uxx-rom = { path = "../lpc11uxx-rom" }
 heapless = "0.5"

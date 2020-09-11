@@ -1,6 +1,6 @@
 use heapless::spsc::Queue;
-use lpc11uxx::{Peripherals, Interrupt, SCB, USART, SYSCON, WWDT};
-use cortex_m::peripheral::NVIC;
+use lpc11uxx::{Peripherals, Interrupt, SCB, USART, SYSCON, WWDT, NVIC};
+//use cortex_m::peripheral::NVIC;
 use cortex_m::peripheral::scb::SystemHandler;
 
 static mut USART_WRITE_RING_BUFFER: Queue<u8, heapless::consts::U256> = Queue(heapless::i::Queue::new());
@@ -59,7 +59,7 @@ pub fn init_usart(syscon: &SYSCON, usart: &USART, nvic: &mut NVIC, scb: &mut SCB
     // Disable access to the divisor registers, restore access to USART read/write registers.
     usart.lcr.modify(|_, v| v.dlab().disable_access_to_di());
 
-    unsafe { NVIC::unmask(Interrupt::USART) };
+    unsafe { nvic.enable(Interrupt::USART) };
     usart.ier_mut().modify(|_, v| v
         .rbrinten().enable_the_rda_inter()
         .rlsinten().enable_the_rls_inter());

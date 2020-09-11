@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-#![feature(asm, const_int_conversion, const_loop, const_if_match, const_panic, const_fn)]
+#![feature(asm, const_loop, const_if_match, const_panic, const_fn)]
 #![feature(panic_info_message)]
 
 mod usb_descriptors;

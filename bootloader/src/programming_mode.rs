@@ -409,10 +409,9 @@ pub fn write_report_0x94(err_code: u16) -> usize {
 }
 
 pub fn hid_handle_set_feature_report(wwdt: &WWDT, syscon: &SYSCON, buffer: &[u8]) -> usize {
-    match buffer[0] {
+    match buffer.get(0) {
         // GET_HWINFO
-        0x83 => {
-            crate::usb_debug_uart::usb_putb(b"GET_HWINFO\n");
+        Some(0x83) => {
             unsafe {
                 HID_REPORT_PACKET = [0; 0x40];
                 HID_REPORT_PACKET[0] = 0x83;
@@ -428,13 +427,11 @@ pub fn hid_handle_set_feature_report(wwdt: &WWDT, syscon: &SYSCON, buffer: &[u8]
             }
             0
         },
-        0x90 => {
-            crate::usb_debug_uart::usb_putb(b"REINVOKE_ISP\n");
+        Some(0x90) => {
             unsafe { SHOULD_REINVOKE_ISP = true; }
             return 0;
         },
-        0x91 => {
-            crate::usb_debug_uart::usb_putb(b"ERASE_PROGRAM2\n");
+        Some(0x91) => {
             write_report_0x94(2);
             unsafe {
                 FLASH_CUR_IDX = 0;
@@ -450,24 +447,28 @@ pub fn hid_handle_set_feature_report(wwdt: &WWDT, syscon: &SYSCON, buffer: &[u8]
             }
             return write_report_0x94(0);
         },
-        0x92 => {
-            // Spams a bit too much :D
-            //crate::usb_debug_uart::usb_putb(b"FLASH_FIRMWARE\n");
-
-            let _err = write_data_to_program2_flash(&buffer[2..2 + usize::from(buffer[1])]);
-            let err = 0;
-            write_report_0x94(err as u16);
-            led_advance_blink();
-            unsafe {
-                HID_REPORT_PACKET = [0; 0x40];
-                HID_REPORT_PACKET[0] = 0x92;
+        Some(0x92) => {
+            if let Some(buffer) = buffer.get(1).and_then(|size| buffer.get(2..usize::from(*size))) {
+                let _err = write_data_to_program2_flash(buffer);
+                let err = 0;
+                write_report_0x94(err as u16);
+                led_advance_blink();
+                unsafe {
+                    HID_REPORT_PACKET = [0; 0x40];
+                    HID_REPORT_PACKET[0] = 0x92;
+                }
+                return 2;
+            } else {
+                1
             }
-            return 2;
         },
-        0x93 => {
-            crate::usb_debug_uart::usb_putb(b"VERIFY_FIRMWARE_SIG\n");
-            let err = end_flash_verify_firmware_sig(&buffer[2..2 + 0x10]);
-            return write_report_0x94(err as u16);
+        Some(0x93) => {
+            if let Some(buffer) = buffer.get(2..0x12) {
+                let err = end_flash_verify_firmware_sig(buffer);
+                return write_report_0x94(err as u16);
+            } else {
+                return write_report_0x94(1 as u16);
+            }
             //let peripherals = unsafe { Peripherals::steal() };
             //crate::usb_debug_uart::usb_putnbr_hex(peripherals.FLASHCTRL.fmsw0.read().bits());
             //crate::usb_debug_uart::usb_putb(b" ");
@@ -478,43 +479,50 @@ pub fn hid_handle_set_feature_report(wwdt: &WWDT, syscon: &SYSCON, buffer: &[u8]
             //crate::usb_debug_uart::usb_putnbr_hex(peripherals.FLASHCTRL.fmsw3.read().bits());
             //crate::usb_debug_uart::usb_putb(b"\n");
         },
-        0x95 => {
-            crate::usb_debug_uart::usb_putb(b"RESET_WHOLE_SOC\n");
-            if buffer[1] == 0 {
+        Some(0x95) => {
+            if let Some(0) = buffer.get(1) {
                 crate::nrf_comms::usart_send_reset();
                 super::setup_watchdog(syscon, wwdt, 10_000);
             }
             return 0;
         },
-        0x97 => {
-            crate::usb_debug_uart::usb_putb(b"NRF_ERASE_PROGRAM\n");
+        Some(0x97) => {
             crate::nrf_comms::usart_send_text_transmission(b"Y");
             return write_report_0x94(2);
         },
-        0x98 => {
-            // crate::usb_debug_uart::usb_putb(b"NRF_FLASH_PROGRAM\n");
-            crate::nrf_comms::usart_send_z_packet(&buffer[2..2 + usize::from(buffer[1])]);
-            return write_report_0x94(2);
+        Some(0x98) => {
+            if let Some(buffer) = buffer.get(1).and_then(|size| buffer.get(2..usize::from(*size))) {
+                crate::nrf_comms::usart_send_z_packet(buffer);
+                return write_report_0x94(2);
+            } else {
+                return write_report_0x94(1);
+            }
         },
-        0x99 => {
-            crate::usb_debug_uart::usb_putb(b"NRF_VERIFY_FIRMWARE_SIG\n");
-            crate::nrf_comms::usart_send_sig_packet(&buffer[2..2 + 0x10]);
-            return write_report_0x94(2);
+        Some(0x99) => {
+            if let Some(buffer) = buffer.get(2..0x12) {
+                crate::nrf_comms::usart_send_sig_packet(buffer);
+                return write_report_0x94(2);
+            } else {
+                return write_report_0x94(1);
+            }
         },
-        0xa0 => {
-            crate::usb_debug_uart::usb_putb(b"SET_HARDWARE_VERSION\n");
-            if buffer[1] == 4 {
-                let version = u32::from_le_bytes(buffer[2..6].try_into().unwrap());
-                unsafe { super::EEPROM_CACHE.version = version; }
-                super::write_eeprom_cache();
+        Some(0xa0) => {
+            if let Some(4) = buffer.get(1) {
+                if let Some(buffer) = buffer.get(2..6) {
+                    if let Ok(version) = buffer[..4].try_into().map(u32::from_le_bytes) {
+                        unsafe { super::EEPROM_CACHE.version = version; }
+                        super::write_eeprom_cache();
+                    }
+                }
             }
             return 0;
         },
-        n => {
-            crate::usb_debug_uart::usb_putnbr_hex(n as u32);
+        Some(n) => {
+            crate::usb_debug_uart::usb_putnbr_hex(*n as u32);
             crate::usb_debug_uart::usb_putb(b"\n");
             return 0;
-        }
+        },
+        None => return 0,
     }
 }
 
@@ -786,11 +794,11 @@ fn reinvoke_isp() {
         asm!("
         ldr r0, =0x10001fe0
         msr msp, r0
-        blx $0
+        blx r1
         dont_return:
         wfi
         b dont_return
-        " :: "{r1}"(reinvoke_isp_inner as extern fn()));
+        ", in("r1") reinvoke_isp_inner as extern fn());
     }
 }
 
